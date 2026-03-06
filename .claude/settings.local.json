@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(docker info:*)",
+      "Bash(docker compose:*)",
+      "Bash(poetry run:*)",
+      "Bash(docker ps:*)",
+      "Bash(make ingest:*)",
+      "Bash(docker exec:*)",
+      "Bash(pip show:*)",
+      "Bash(ls:*)",
+      "WebSearch",
+      "WebFetch(domain:realpython.com)",
+      "WebFetch(domain:www.marktechpost.com)"
+    ]
+  },
+  "outputStyle": "default"
+}

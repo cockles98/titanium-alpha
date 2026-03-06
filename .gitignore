@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+
+# Data outputs
+data/outputs/
+models/checkpoints/
+
+# Notebooks output
+notebooks/*.ipynb
+!notebooks/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Poetry
+poetry.lock
