@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import polars as pl
 from langchain_anthropic import ChatAnthropic
@@ -506,9 +506,13 @@ def build_investment_graph() -> Any:
 # ---------------------------------------------------------------------------
 
 
+_NodeCallback = Callable[[str, str, dict[str, Any]], None]
+
+
 def run_agent_debate(
     tickers: list[str] | None = None,
-) -> list[FinalDecision]:
+    on_node_complete: _NodeCallback | None = None,
+) -> tuple[list[FinalDecision], dict[str, dict]]:
     """Run the full agent debate for each ticker.
 
     Builds the LangGraph pipeline and invokes it once per ticker.
@@ -518,15 +522,23 @@ def run_agent_debate(
     Args:
         tickers: List of ticker symbols to analyse.  Defaults to
             ``["SPY", "NVDA", "AAPL", "QQQ"]``.
+        on_node_complete: Optional callback invoked after each graph
+            node finishes.  Signature:
+            ``(ticker, node_name, node_output) -> None``.
+            Useful for live dashboard updates.
 
     Returns:
-        List of ``FinalDecision`` dicts, one per ticker.
+        Tuple of:
+            - List of ``FinalDecision`` dicts, one per ticker.
+            - Dict mapping ticker to the full graph state (reports,
+              debate_log, predictions, etc.) for dashboard consumption.
     """
     from src.data.ingestion import DEFAULT_TICKERS
 
     tickers = tickers or DEFAULT_TICKERS
     graph = build_investment_graph()
     decisions: list[FinalDecision] = []
+    full_states: dict[str, dict] = {}
 
     for ticker in tickers:
         logger.info("=" * 60)
@@ -534,7 +546,19 @@ def run_agent_debate(
         logger.info("=" * 60)
 
         initial_state = make_empty_state(ticker)
-        result = graph.invoke(initial_state)
+
+        if on_node_complete is not None:
+            # Stream mode: get per-node updates for live UI
+            result: dict[str, Any] = {}
+            for node_output in graph.stream(initial_state):
+                # node_output is {node_name: partial_state_update}
+                for node_name, partial in node_output.items():
+                    result.update(partial)
+                    on_node_complete(ticker, node_name, partial)
+        else:
+            result = graph.invoke(initial_state)
+
+        full_states[ticker] = dict(result)
 
         decision = result.get("final_decision")
         if decision:
@@ -554,7 +578,7 @@ def run_agent_debate(
             logger.debug(entry)
 
     logger.info("Agent debate complete | {} decisions produced", len(decisions))
-    return decisions
+    return decisions, full_states
 
 
 # ---------------------------------------------------------------------------

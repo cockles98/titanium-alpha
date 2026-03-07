@@ -1,4 +1,4 @@
-.PHONY: setup ingest predict test lint run clean
+.PHONY: setup ingest predict decide test lint run clean
 
 # ── Setup ──────────────────────────────────────────────────
 setup:
@@ -12,6 +12,10 @@ ingest:
 # ── Prediction pipeline ───────────────────────────────────
 predict:
 	poetry run python -m src.models.predict
+
+# ── Decision pipeline ────────────────────────────────────
+decide:
+	poetry run python -m src.portfolio.decision_engine
 
 # ── Testing ────────────────────────────────────────────────
 test:
