@@ -107,9 +107,10 @@ def load_forecast() -> dict[str, list[dict[str, Any]]] | None:
         import polars as pl
 
         df = pl.read_parquet(path)
+        id_col = "ticker" if "ticker" in df.columns else "unique_id"
         result: dict[str, list[dict[str, Any]]] = {}
-        for ticker in df["unique_id"].unique().to_list():
-            rows = df.filter(pl.col("unique_id") == ticker)
+        for ticker in df[id_col].unique().to_list():
+            rows = df.filter(pl.col(id_col) == ticker)
             result[ticker] = rows.to_dicts()
         return result
     except Exception:
@@ -663,7 +664,7 @@ def _chart_quantile_fan(
 
     sample = forecast_rows[0]
     q_cols = sorted(
-        [c for c in sample.keys() if "PatchTST" in c and "-q" in c]
+        [c for c in sample.keys() if c.startswith("PatchTST-") and c not in ("date", "ds")]
     )
 
     # Extract dates and quantile values

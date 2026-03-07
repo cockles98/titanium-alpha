@@ -246,7 +246,7 @@ class DecisionEngine:
                 len(decisions),
             )
             return decisions, full_states
-        except (ImportError, RuntimeError, ValueError, OSError) as exc:
+        except Exception as exc:
             logger.warning(
                 "Agent debate failed ({}); proceeding with HRP "
                 "without confidence tilt",

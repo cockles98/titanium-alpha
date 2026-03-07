@@ -97,19 +97,23 @@ class PredictionPipeline:
         Returns:
             DataFrame with columns: ticker, mae, rmse.
         """
-        median_col = "PatchTST-q0.5"
-        if median_col not in forecast_df.columns:
-            logger.warning("No median column '{}' in forecast; skipping metrics", median_col)
+        median_col = next(
+            (c for c in ("PatchTST-q0.5", "PatchTST-median") if c in forecast_df.columns),
+            None,
+        )
+        if median_col is None:
+            logger.warning("No median column in forecast; skipping metrics")
             return pl.DataFrame({"ticker": [], "mae": [], "rmse": []})
 
         tickers: list[str] = []
         maes: list[float] = []
         rmses: list[float] = []
 
-        unique_ids = forecast_df["unique_id"].unique().to_list()
+        id_col = "ticker" if "ticker" in forecast_df.columns else "unique_id"
+        unique_ids = forecast_df[id_col].unique().to_list()
         for ticker in unique_ids:
             # Get forecast values (h rows per ticker)
-            fc_rows = forecast_df.filter(pl.col("unique_id") == ticker)
+            fc_rows = forecast_df.filter(pl.col(id_col) == ticker)
             predicted = fc_rows[median_col].to_list()
 
             # Get last h actual closes

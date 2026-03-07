@@ -152,15 +152,31 @@ class TitaniumForecaster:
         Returns:
             DataFrame with columns: ticker, prob_up, expected_return.
         """
+        # Detect quantile column names (supports both old and new NeuralForecast naming)
         q_cols = [f"PatchTST-q{q}" for q in quantiles]
+        q_cols_present = [c for c in q_cols if c in forecast_df.columns]
+        if not q_cols_present:
+            # New NeuralForecast naming: PatchTST-lo-80.0, PatchTST-lo-50.0,
+            # PatchTST-median, PatchTST-hi-50.0, PatchTST-hi-80.0
+            q_cols_present = [
+                c for c in forecast_df.columns
+                if c.startswith("PatchTST-") and c not in ("ticker", "date")
+            ]
+
+        # Detect median column
+        median_col = next(
+            (c for c in ("PatchTST-q0.5", "PatchTST-median") if c in forecast_df.columns),
+            None,
+        )
 
         tickers: list[str] = []
         prob_ups: list[float] = []
         expected_returns: list[float] = []
 
-        unique_ids = forecast_df["unique_id"].unique().to_list()
+        id_col = "ticker" if "ticker" in forecast_df.columns else "unique_id"
+        unique_ids = forecast_df[id_col].unique().to_list()
         for ticker in unique_ids:
-            ticker_rows = forecast_df.filter(pl.col("unique_id") == ticker)
+            ticker_rows = forecast_df.filter(pl.col(id_col) == ticker)
             last_row = ticker_rows.tail(1)
 
             current_close = last_closes.get(ticker)
@@ -168,15 +184,14 @@ class TitaniumForecaster:
                 logger.warning("No last close for ticker {}, skipping", ticker)
                 continue
 
-            q_values = [last_row[col][0] for col in q_cols if col in last_row.columns]
+            q_values = [last_row[col][0] for col in q_cols_present if col in last_row.columns]
             if not q_values:
                 continue
 
             n_above = sum(1 for v in q_values if v > current_close)
             prob_up = n_above / len(q_values)
 
-            median_col = "PatchTST-q0.5"
-            if median_col in last_row.columns:
+            if median_col and median_col in last_row.columns:
                 median_pred = last_row[median_col][0]
                 exp_ret = (median_pred - current_close) / current_close
             else:
@@ -216,7 +231,7 @@ class TitaniumForecaster:
             )
 
         model = self._build_model()
-        self._nf = NeuralForecast(models=[model], freq="1bd")
+        self._nf = NeuralForecast(models=[model], freq="1d")
 
         logger.info(
             "Fitting PatchTST: {} rows, val_size={}",
@@ -250,15 +265,10 @@ class TitaniumForecaster:
         if not self._is_fitted or self._nf is None:
             raise RuntimeError("Model not fitted. Call fit() first.")
 
-        kwargs: dict[str, Any] = {
-            "id_col": "ticker",
-            "time_col": "date",
-            "target_col": "close",
-        }
         if df is not None:
-            kwargs["df"] = self._prepare_df(df)
-
-        forecast = self._nf.predict(**kwargs)
+            forecast = self._nf.predict(df=self._prepare_df(df))
+        else:
+            forecast = self._nf.predict()
 
         logger.info("Predict: {} rows generated", forecast.height)
         return forecast

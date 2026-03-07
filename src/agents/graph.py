@@ -200,10 +200,12 @@ def load_context(state: InvestmentState) -> dict[str, Any]:
     if forecast_path.exists() and not predictions.get("quantiles"):
         try:
             fc_df = pl.read_parquet(forecast_path)
-            fc_rows = fc_df.filter(pl.col("unique_id") == ticker)
+            fc_id_col = "ticker" if "ticker" in fc_df.columns else "unique_id"
+            fc_rows = fc_df.filter(pl.col(fc_id_col) == ticker)
             if fc_rows.height > 0:
                 quantile_cols = [
-                    c for c in fc_rows.columns if c.startswith("PatchTST-q")
+                    c for c in fc_rows.columns
+                    if c.startswith("PatchTST-") and c not in (fc_id_col, "date", "ds")
                 ]
                 # Use first forecast row for quantile snapshot
                 quantiles = {
