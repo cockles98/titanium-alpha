@@ -30,6 +30,13 @@ import streamlit as st
 
 DATA_DIR = Path("data/outputs")
 
+# Resolve benchmark ticker from config (used in chart labels)
+try:
+    from src.config import load_benchmark as _load_benchmark
+    _BENCHMARK_TICKER = _load_benchmark()
+except Exception:
+    _BENCHMARK_TICKER = "SPY"
+
 # ---------------------------------------------------------------------------
 # Theme / styling
 # ---------------------------------------------------------------------------
@@ -70,6 +77,21 @@ ACTION_COLORS: dict[str, str] = {
     "HOLD": _ACCENT_GOLD,
     "SELL": _ACCENT_RED,
 }
+
+# Dynamic color palette for many tickers (Plotly qualitative)
+_PLOTLY_COLORS = [
+    "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
+    "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
+    "#4A90D9", "#43A047", "#E53935", "#FFB300", "#7B1FA2",
+    "#0097A7", "#F4511E", "#388E3C", "#1976D2", "#C2185B",
+    "#00838F", "#558B2F", "#AD1457", "#6A1B9A", "#EF6C00",
+    "#00695C", "#283593", "#BF360C", "#1B5E20", "#4527A0",
+]
+
+
+def _ticker_color(index: int) -> str:
+    """Return a color for a ticker by index (cycles through palette)."""
+    return _PLOTLY_COLORS[index % len(_PLOTLY_COLORS)]
 
 # ---------------------------------------------------------------------------
 # Data loaders (cached)
@@ -261,7 +283,7 @@ def _chart_benchmark_equity(equity_df: Any, log_scale: bool = False) -> go.Figur
         line=dict(color=_ACCENT_BLUE, width=2),
     ))
     fig.add_trace(go.Scatter(
-        x=dates, y=benchmark, name="Benchmark (SPY)",
+        x=dates, y=benchmark, name=f"Benchmark ({_BENCHMARK_TICKER})",
         line=dict(color=_ACCENT_GOLD, width=2, dash="dash"),
     ))
 
@@ -538,16 +560,79 @@ def tab_benchmark(
 # ---------------------------------------------------------------------------
 
 
-def _chart_weight_donut(decisions: dict[str, Any]) -> go.Figure:
-    """Plotly donut chart of HRP final weights."""
-    weights = decisions.get("hrp_final_weights", {})
-    tickers = list(weights.keys())
-    values = list(weights.values())
+def _latest_benchmark_weights(weights_df: Any) -> dict[str, float]:
+    """Extract the most recent rebalance weights from benchmark_weights.parquet.
 
-    colors = [_ACCENT_BLUE, _ACCENT_GREEN, _ACCENT_RED, _ACCENT_GOLD]
-    # Extend colors if more tickers
-    while len(colors) < len(tickers):
-        colors.append("#888888")
+    Args:
+        weights_df: Polars DataFrame with columns date, ticker, weight.
+
+    Returns:
+        ``{ticker: weight}`` from the latest rebalance date.
+    """
+    import polars as pl
+
+    latest_date = weights_df["date"].max()
+    latest = weights_df.filter(pl.col("date") == latest_date)
+    return {
+        row["ticker"]: row["weight"]
+        for row in latest.select(["ticker", "weight"]).to_dicts()
+    }
+
+
+def _render_benchmark_weight_table(weights_df: Any) -> None:
+    """Render a table of the latest benchmark weights sorted by weight."""
+    import polars as pl
+
+    latest_date = weights_df["date"].max()
+    latest = (
+        weights_df.filter(pl.col("date") == latest_date)
+        .select(["ticker", "weight"])
+        .sort("weight", descending=True)
+    )
+    rows = [
+        {"Ticker": r["ticker"], "Weight": f"{r['weight']:.4f}"}
+        for r in latest.to_dicts()
+    ]
+    st.caption(f"Rebalance date: {latest_date}")
+    st.dataframe(rows, use_container_width=True, hide_index=True, height=400)
+
+
+def _chart_weight_donut(
+    weights: dict[str, float],
+    title: str = "HRP Portfolio Weights",
+    top_n: int = 15,
+) -> go.Figure:
+    """Plotly donut chart of portfolio weights (top N + Others).
+
+    Args:
+        weights: ``{ticker: weight}`` mapping.
+        title: Chart title.
+        top_n: Number of top tickers to show individually.
+    """
+    if not weights:
+        fig = go.Figure()
+        fig.update_layout(
+            title=dict(text=title, font=dict(size=18, color=_TEXT)),
+            paper_bgcolor=_DARK_BG, plot_bgcolor=_DARK_BG,
+            font=dict(color=_TEXT),
+        )
+        return fig
+
+    # Sort by weight descending
+    sorted_items = sorted(weights.items(), key=lambda x: x[1], reverse=True)
+
+    if len(sorted_items) > top_n:
+        top = sorted_items[:top_n]
+        others_val = sum(v for _, v in sorted_items[top_n:])
+        tickers = [t for t, _ in top] + ["Others"]
+        values = [v for _, v in top] + [others_val]
+    else:
+        tickers = [t for t, _ in sorted_items]
+        values = [v for _, v in sorted_items]
+
+    colors = [_ticker_color(i) for i in range(len(tickers))]
+    if len(sorted_items) > top_n:
+        colors[-1] = "#555555"  # gray for "Others"
 
     fig = go.Figure(
         data=[
@@ -555,21 +640,21 @@ def _chart_weight_donut(decisions: dict[str, Any]) -> go.Figure:
                 labels=tickers,
                 values=values,
                 hole=0.55,
-                marker=dict(colors=colors[: len(tickers)]),
+                marker=dict(colors=colors),
                 textinfo="label+percent",
-                textfont=dict(size=14, color=_TEXT),
+                textfont=dict(size=11, color=_TEXT),
                 hovertemplate="%{label}: %{value:.4f} (%{percent})<extra></extra>",
             )
         ]
     )
     fig.update_layout(
-        title=dict(text="HRP Portfolio Weights", font=dict(size=18, color=_TEXT)),
+        title=dict(text=title, font=dict(size=18, color=_TEXT)),
         paper_bgcolor=_DARK_BG,
         plot_bgcolor=_DARK_BG,
         font=dict(color=_TEXT),
         showlegend=True,
-        legend=dict(font=dict(color=_TEXT)),
-        height=400,
+        legend=dict(font=dict(color=_TEXT, size=10)),
+        height=450,
         margin=dict(t=50, b=20, l=20, r=20),
     )
     return fig
@@ -621,11 +706,21 @@ def _render_decision_table(decisions: dict[str, Any]) -> None:
     )
 
 
-def _chart_weight_comparison(decisions: dict[str, Any]) -> go.Figure:
-    """Bar chart comparing raw vs tilted HRP weights."""
-    raw = decisions.get("hrp_raw_weights", {})
-    final = decisions.get("hrp_final_weights", {})
-    tickers = list(final.keys())
+def _chart_weight_comparison(
+    raw: dict[str, float],
+    final: dict[str, float],
+    top_n: int = 20,
+) -> go.Figure:
+    """Bar chart comparing raw vs tilted HRP weights (top N tickers).
+
+    Args:
+        raw: Raw HRP weights.
+        final: Tilted/final weights.
+        top_n: Number of top tickers to display.
+    """
+    # Sort by final weight descending, show top_n
+    sorted_tickers = sorted(final.keys(), key=lambda t: final[t], reverse=True)
+    tickers = sorted_tickers[:top_n]
 
     fig = go.Figure()
     fig.add_trace(
@@ -645,53 +740,92 @@ def _chart_weight_comparison(decisions: dict[str, Any]) -> go.Figure:
             marker_color=_ACCENT_GREEN,
         )
     )
+
+    subtitle = f" (Top {top_n})" if len(sorted_tickers) > top_n else ""
     fig.update_layout(
         title=dict(
-            text="Raw vs Confidence-Tilted Weights",
+            text=f"Raw vs Confidence-Tilted Weights{subtitle}",
             font=dict(size=16, color=_TEXT),
         ),
         barmode="group",
         paper_bgcolor=_DARK_BG,
         plot_bgcolor=_DARK_BG,
         font=dict(color=_TEXT),
-        xaxis=dict(gridcolor="#333"),
-        yaxis=dict(gridcolor="#333", title="Weight"),
-        height=350,
-        margin=dict(t=50, b=30, l=50, r=20),
+        xaxis=dict(gridcolor="#333", tickangle=-45, tickfont=dict(size=10)),
+        yaxis=dict(gridcolor="#333", title="Weight", tickformat=".1%"),
+        height=400,
+        margin=dict(t=50, b=80, l=50, r=20),
     )
     return fig
 
 
-def tab_performance(decisions: dict[str, Any]) -> None:
-    """Render the Performance tab."""
+def tab_performance(
+    decisions: dict[str, Any] | None,
+    bench_weights: Any | None = None,
+    bench_metrics: dict[str, float] | None = None,
+) -> None:
+    """Render the Performance tab.
+
+    Falls back to benchmark weight data when decisions.json is missing
+    or stale (fewer tickers than the benchmark universe).
+    """
     st.header("Portfolio Performance")
 
-    # Timestamp
-    ts = decisions.get("timestamp", "N/A")
-    st.caption(f"Last decision: {ts}")
+    # --- Determine data source ---
+    has_decisions = decisions is not None and decisions.get("decisions")
+    has_bench = bench_weights is not None
 
-    # Metric cards
-    _render_metric_cards(decisions)
+    if has_decisions:
+        ts = decisions.get("timestamp", "N/A")
+        st.caption(f"Last agent decision: {ts}")
+        _render_metric_cards(decisions)
 
-    # Charts side by side
+        weights_final = decisions.get("hrp_final_weights", {})
+        weights_raw = decisions.get("hrp_raw_weights", {})
+    elif has_bench:
+        st.info(
+            "Agent decisions not available. Showing latest benchmark "
+            "weights from walk-forward backtest."
+        )
+        weights_final = _latest_benchmark_weights(bench_weights)
+        weights_raw = weights_final  # no raw/tilt distinction in benchmark
+    else:
+        st.warning(
+            "No decision or benchmark data available. "
+            "Run `make benchmark-fast` or `make decide`."
+        )
+        return
+
+    # --- Metric summary from benchmark ---
+    if bench_metrics and not has_decisions:
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Sharpe", f"{bench_metrics.get('sharpe_ratio', 0):.3f}")
+        col2.metric("CAGR", f"{bench_metrics.get('cagr', 0):.2%}")
+        col3.metric("Max DD", f"{bench_metrics.get('max_drawdown', 0):.2%}")
+        col4.metric("Positions", f"{bench_metrics.get('avg_positions', 0):.0f}")
+
+    # --- Charts side by side ---
     col_left, col_right = st.columns(2)
     with col_left:
         st.plotly_chart(
-            _chart_weight_donut(decisions), use_container_width=True
+            _chart_weight_donut(weights_final), use_container_width=True
         )
     with col_right:
         st.plotly_chart(
-            _chart_weight_comparison(decisions), use_container_width=True
+            _chart_weight_comparison(weights_raw, weights_final),
+            use_container_width=True,
         )
 
-    # Decision table
-    st.subheader("Decisions")
-    _render_decision_table(decisions)
-
-    # Cluster order
-    cluster = decisions.get("cluster_order", [])
-    if cluster:
-        st.caption(f"HRP Cluster Order: {' → '.join(cluster)}")
+    # --- Decision table ---
+    if has_decisions:
+        st.subheader("Decisions")
+        _render_decision_table(decisions)
+        cluster = decisions.get("cluster_order", [])
+        if cluster:
+            st.caption(f"HRP Cluster Order: {' → '.join(cluster)}")
+    elif has_bench:
+        st.subheader("Latest Benchmark Weights")
+        _render_benchmark_weight_table(bench_weights)
 
 
 # ---------------------------------------------------------------------------
@@ -1153,47 +1287,198 @@ def _render_prediction_card(pred: dict[str, Any], ticker: str) -> None:
     col3.metric("Expected Return", f"{expected_ret:.4f}")
 
 
+def _chart_ticker_weight_history(
+    weights_df: Any,
+    ticker: str,
+) -> go.Figure | None:
+    """Line chart showing a single ticker's weight evolution over time."""
+    try:
+        import polars as pl
+    except ImportError:
+        return None
+
+    filtered = weights_df.filter(pl.col("ticker") == ticker).sort("date")
+    if filtered.height < 2:
+        return None
+
+    dates = filtered["date"].to_list()
+    weights = filtered["weight"].to_list()
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=weights, mode="lines",
+        fill="tozeroy", fillcolor="rgba(74,144,217,0.2)",
+        line=dict(color=_ACCENT_BLUE, width=2),
+        name="Weight",
+    ))
+
+    fig.update_layout(
+        title=dict(text=f"{ticker} — Weight Evolution", font=dict(size=16, color=_TEXT)),
+        xaxis_title="Date",
+        yaxis_title="Portfolio Weight",
+        yaxis_tickformat=".1%",
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        height=350,
+        margin=dict(t=50, b=40, l=60, r=20),
+    )
+    return fig
+
+
+def _chart_ticker_cumulative_return(
+    equity_df: Any,
+    weights_df: Any,
+    ticker: str,
+) -> go.Figure | None:
+    """Line chart of a ticker's cumulative return vs portfolio vs benchmark."""
+    try:
+        import polars as pl
+    except ImportError:
+        return None
+
+    if equity_df is None or equity_df.height < 2:
+        return None
+
+    dates = equity_df["date"].to_list()
+    port_vals = equity_df["portfolio_value"].to_list()
+    bench_vals = equity_df["benchmark_value"].to_list()
+
+    # Normalise to 1.0
+    port_norm = [v / port_vals[0] for v in port_vals]
+    bench_norm = [v / bench_vals[0] for v in bench_vals]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=port_norm, name="Portfolio",
+        line=dict(color=_ACCENT_BLUE, width=1.5),
+    ))
+    fig.add_trace(go.Scatter(
+        x=dates, y=bench_norm, name=f"Benchmark ({_BENCHMARK_TICKER})",
+        line=dict(color=_ACCENT_GOLD, width=1.5, dash="dash"),
+    ))
+
+    fig.update_layout(
+        title=dict(
+            text=f"Cumulative Returns — Portfolio vs Benchmark",
+            font=dict(size=16, color=_TEXT),
+        ),
+        xaxis_title="Date",
+        yaxis_title="Cumulative Return (1.0 = start)",
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        legend=dict(font=dict(color=_TEXT)),
+        height=350,
+        margin=dict(t=50, b=40, l=60, r=20),
+    )
+    return fig
+
+
+def _render_ticker_stats(weights_df: Any, ticker: str) -> None:
+    """Render per-ticker statistics from benchmark weight history."""
+    import polars as pl
+
+    filtered = weights_df.filter(pl.col("ticker") == ticker).sort("date")
+    if filtered.height == 0:
+        return
+
+    avg_weight = filtered["weight"].mean()
+    max_weight = filtered["weight"].max()
+    min_weight = filtered["weight"].min()
+    n_rebalances = filtered.height
+    n_retrained = filtered.filter(pl.col("retrained")).height
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Avg Weight", f"{avg_weight:.2%}")
+    col2.metric("Max Weight", f"{max_weight:.2%}")
+    col3.metric("Min Weight", f"{min_weight:.2%}")
+    col4.metric("Rebalances", n_rebalances)
+    col5.metric("Retrains", n_retrained)
+
+
 def tab_microstructure(
     forecast: dict[str, list[dict[str, Any]]] | None,
     predictions: dict[str, dict[str, Any]] | None,
+    bench_weights: Any | None = None,
+    bench_equity: Any | None = None,
 ) -> None:
-    """Render the Microstructure tab."""
-    st.header("Microstructure — PatchTST Forecasts")
+    """Render the Microstructure tab.
 
-    if forecast is None and predictions is None:
-        st.warning(
-            "No forecast or prediction data available. "
-            "Run `make predict` first."
-        )
-        return
+    Shows per-ticker analysis: PatchTST forecasts (when available)
+    and benchmark weight/return data for all tickers in the universe.
+    """
+    st.header("Microstructure — Per-Ticker Analysis")
 
-    # Ticker selector
-    available = set()
+    # Build ticker list from all available sources
+    available: set[str] = set()
     if forecast:
         available.update(forecast.keys())
     if predictions:
         available.update(predictions.keys())
+    if bench_weights is not None:
+        try:
+            available.update(bench_weights["ticker"].unique().to_list())
+        except Exception:
+            pass
 
-    tickers = sorted(available)
-    if not tickers:
-        st.warning("No tickers found in forecast data.")
+    if not available:
+        st.warning(
+            "No ticker data available. "
+            "Run `make benchmark-fast` or `make predict` first."
+        )
         return
 
+    tickers = sorted(available)
     selected = st.selectbox(
         "Select Ticker", tickers, key="micro_ticker"
     )
 
-    # Prediction summary
+    # --- PatchTST prediction summary ---
     if predictions and selected in predictions:
         _render_prediction_card(predictions[selected], selected)
         st.divider()
 
-    # Fan chart
+    # --- PatchTST fan chart ---
     if forecast and selected in forecast:
+        st.subheader("PatchTST Quantile Forecast")
         fig = _chart_quantile_fan(forecast[selected], selected)
         st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info(f"No quantile forecast available for {selected}.")
+        st.divider()
+
+    # --- Benchmark per-ticker stats ---
+    if bench_weights is not None:
+        import polars as pl
+
+        has_ticker = bench_weights.filter(
+            pl.col("ticker") == selected
+        ).height > 0
+
+        if has_ticker:
+            st.subheader(f"{selected} — Benchmark Stats")
+            _render_ticker_stats(bench_weights, selected)
+
+            fig_wh = _chart_ticker_weight_history(bench_weights, selected)
+            if fig_wh:
+                st.plotly_chart(fig_wh, use_container_width=True)
+        else:
+            st.info(f"No benchmark weight data for {selected}.")
+
+    # --- Portfolio vs benchmark cumulative return ---
+    if bench_equity is not None:
+        fig_cr = _chart_ticker_cumulative_return(
+            bench_equity, bench_weights, selected
+        )
+        if fig_cr:
+            st.plotly_chart(fig_cr, use_container_width=True)
+
+    # --- No data at all for this ticker ---
+    if (
+        (forecast is None or selected not in forecast)
+        and (predictions is None or selected not in predictions)
+        and bench_weights is None
+    ):
+        st.info(f"No data available for {selected}.")
 
 
 # ---------------------------------------------------------------------------
@@ -1239,13 +1524,7 @@ def main() -> None:
         tab_benchmark(bench_equity, bench_metrics, bench_weights)
 
     with tab1:
-        if decisions:
-            tab_performance(decisions)
-        else:
-            st.warning(
-                "No decision data found. Run `make decide` to generate "
-                "portfolio decisions."
-            )
+        tab_performance(decisions, bench_weights, bench_metrics)
 
     with tab2:
         if decisions:
@@ -1254,7 +1533,7 @@ def main() -> None:
             st.warning("No decision data available. Run `make decide` first.")
 
     with tab3:
-        tab_microstructure(forecast, predictions)
+        tab_microstructure(forecast, predictions, bench_weights, bench_equity)
 
 
 if __name__ == "__main__":

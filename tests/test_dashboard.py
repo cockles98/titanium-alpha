@@ -248,7 +248,7 @@ class TestDataLoaders:
 
 class TestCharts:
     def test_weight_donut(self, sample_decisions: dict[str, Any]) -> None:
-        fig = _chart_weight_donut(sample_decisions)
+        fig = _chart_weight_donut(sample_decisions["hrp_final_weights"])
         assert fig is not None
         assert len(fig.data) == 1
         assert fig.data[0].type == "pie"
@@ -258,7 +258,10 @@ class TestCharts:
         assert fig is not None
 
     def test_weight_comparison(self, sample_decisions: dict[str, Any]) -> None:
-        fig = _chart_weight_comparison(sample_decisions)
+        fig = _chart_weight_comparison(
+            sample_decisions["hrp_raw_weights"],
+            sample_decisions["hrp_final_weights"],
+        )
         assert fig is not None
         assert len(fig.data) == 2  # raw + tilted bars
 
