@@ -39,11 +39,21 @@ from loguru import logger
 from sqlalchemy import Engine
 
 from src.agents.state import FinalDecision
+from src.config import load_tickers
 from src.portfolio.hrp import HRPConfig, HRPOptimizer, HRPResult
 
-# Default tickers (mirrors src.data.ingestion.DEFAULT_TICKERS to avoid
-# importing yfinance at module level).
+# Default tickers — used when config/tickers.json is missing.
 DEFAULT_TICKERS = ("SPY", "NVDA", "AAPL", "QQQ")
+
+
+def _resolve_tickers(tickers: list[str] | None = None) -> list[str]:
+    """Resolve tickers from argument, config file, or hardcoded fallback."""
+    if tickers is not None:
+        return tickers
+    try:
+        return load_tickers()
+    except Exception:
+        return list(DEFAULT_TICKERS)
 
 
 # ---------------------------------------------------------------------------
@@ -131,9 +141,21 @@ class DecisionEngine:
         hrp_config: HRPConfig | None = None,
         lookback_days: int = _DEFAULT_LOOKBACK_DAYS,
     ) -> None:
-        self.tickers = tickers or list(DEFAULT_TICKERS)
+        self.tickers = _resolve_tickers(tickers)
         self.output_dir = Path(output_dir)
-        self.hrp_config = hrp_config
+
+        # Dynamic max_weight when no explicit config is provided
+        if hrp_config is None:
+            n = len(self.tickers)
+            dynamic_max = min(0.25, 2.0 / n)
+            self.hrp_config = HRPConfig(max_weight=dynamic_max)
+            logger.info(
+                "HRP dynamic max_weight={:.4f} for {} tickers",
+                dynamic_max,
+                n,
+            )
+        else:
+            self.hrp_config = hrp_config
 
         if engine is not None:
             self.engine = engine
@@ -454,7 +476,7 @@ class DecisionEngine:
         Returns:
             Complete DecisionOutput ready for serialisation.
         """
-        config = self.hrp_config or HRPConfig()
+        config = self.hrp_config
 
         metadata: dict[str, Any] = {
             "schema_version": "1.0",

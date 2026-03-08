@@ -7,6 +7,7 @@ and persists to PostgreSQL.
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 
 import polars as pl
@@ -14,9 +15,29 @@ import yfinance as yf
 from loguru import logger
 from sqlalchemy import Engine, text
 
+from src.config import load_tickers
 from src.utils.db import get_postgres_engine
 
 DEFAULT_TICKERS: list[str] = ["SPY", "NVDA", "AAPL", "QQQ"]
+
+
+def _resolve_tickers(tickers: list[str] | None = None) -> list[str]:
+    """Resolve tickers from argument, config file, or hardcoded fallback.
+
+    Args:
+        tickers: Explicit list of tickers.  If ``None``, tries to load
+            from ``config/tickers.json``, falling back to
+            ``DEFAULT_TICKERS``.
+
+    Returns:
+        List of ticker symbols.
+    """
+    if tickers is not None:
+        return tickers
+    try:
+        return load_tickers()
+    except Exception:
+        return DEFAULT_TICKERS
 OHLCV_TABLE: str = "market_ohlcv"
 
 _CREATE_TABLE_SQL = f"""
@@ -40,8 +61,12 @@ class MarketDataIngester:
     Args:
         engine: SQLAlchemy engine. If None, creates one from env vars.
         tickers: List of ticker symbols to download.
-        years: Number of years of history to fetch.
+        years: Number of years of history to fetch (ignored when
+            ``start_date`` is provided).
         max_retries: Max download attempts per ticker on network failure.
+        start_date: Explicit start date.  When set, ``years`` is ignored.
+        end_date: Explicit end date.  Defaults to today.
+        max_workers: Number of parallel download threads.
     """
 
     def __init__(
@@ -51,11 +76,21 @@ class MarketDataIngester:
         tickers: list[str] | None = None,
         years: int = 5,
         max_retries: int = 3,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        max_workers: int = 5,
     ) -> None:
         self.engine = engine or get_postgres_engine()
-        self.tickers = tickers or DEFAULT_TICKERS
+        self.tickers = _resolve_tickers(tickers)
         self.years = years
         self.max_retries = max_retries
+        self.max_workers = max_workers
+
+        self.end_date = end_date or date.today()
+        if start_date is not None:
+            self.start_date = start_date
+        else:
+            self.start_date = self.end_date - timedelta(days=self.years * 365)
 
     def _ensure_table(self) -> None:
         """Create the OHLCV table if it doesn't exist."""
@@ -76,23 +111,20 @@ class MarketDataIngester:
         Raises:
             RuntimeError: If all retry attempts fail.
         """
-        end_date = date.today()
-        start_date = end_date - timedelta(days=self.years * 365)
-
         for attempt in range(1, self.max_retries + 1):
             try:
                 logger.info(
                     "Downloading {} ({} → {}) | attempt {}/{}",
                     ticker,
-                    start_date,
-                    end_date,
+                    self.start_date,
+                    self.end_date,
                     attempt,
                     self.max_retries,
                 )
                 pdf = yf.download(
                     ticker,
-                    start=str(start_date),
-                    end=str(end_date),
+                    start=str(self.start_date),
+                    end=str(self.end_date),
                     auto_adjust=False,
                     progress=False,
                 )
@@ -195,27 +227,83 @@ class MarketDataIngester:
         logger.info("Upserted {} rows into '{}'", len(rows), OHLCV_TABLE)
         return len(rows)
 
-    def run(self) -> pl.DataFrame:
+    def _download_batch(self) -> list[pl.DataFrame]:
+        """Download all tickers in parallel using ThreadPoolExecutor.
+
+        Submissions are staggered by 0.5 s to respect yfinance rate
+        limits.  Each ticker retries independently via
+        ``_download_ticker``.
+
+        Returns:
+            List of DataFrames (one per successfully downloaded ticker).
+            Tickers that fail after all retries are logged and skipped.
+        """
+        frames: list[pl.DataFrame] = []
+        failed: list[str] = []
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+            futures = {}
+            for i, ticker in enumerate(self.tickers):
+                if i > 0:
+                    time.sleep(0.5)
+                futures[pool.submit(self._download_ticker, ticker)] = ticker
+
+            for future in as_completed(futures):
+                ticker = futures[future]
+                try:
+                    frames.append(future.result())
+                except RuntimeError:
+                    logger.error("Skipping {} — all retries exhausted", ticker)
+                    failed.append(ticker)
+
+        if failed:
+            logger.warning(
+                "Failed tickers ({}/{}): {}",
+                len(failed),
+                len(self.tickers),
+                failed,
+            )
+        return frames
+
+    def run(self, *, parallel: bool = True) -> pl.DataFrame:
         """Execute the full ingestion pipeline.
 
         Downloads data for all tickers, saves to PostgreSQL,
         and returns the combined DataFrame.
 
+        Args:
+            parallel: If ``True`` (default), downloads tickers in
+                parallel using ``ThreadPoolExecutor``.  Set to
+                ``False`` for sequential downloads (backward compat).
+
         Returns:
             Combined Polars DataFrame with all tickers.
+
+        Raises:
+            RuntimeError: If no tickers could be downloaded.
         """
         self._ensure_table()
 
-        all_frames: list[pl.DataFrame] = []
-        for ticker in self.tickers:
-            df = self._download_ticker(ticker)
+        if parallel and len(self.tickers) > 1:
+            all_frames = self._download_batch()
+        else:
+            all_frames = []
+            for ticker in self.tickers:
+                try:
+                    all_frames.append(self._download_ticker(ticker))
+                except RuntimeError:
+                    logger.error("Skipping {} — all retries exhausted", ticker)
+
+        if not all_frames:
+            raise RuntimeError("No tickers could be downloaded")
+
+        for df in all_frames:
             self._save_to_postgres(df)
-            all_frames.append(df)
 
         combined = pl.concat(all_frames)
         logger.info(
             "Ingestion complete | {} tickers | {} total rows",
-            len(self.tickers),
+            len(all_frames),
             combined.height,
         )
         return combined

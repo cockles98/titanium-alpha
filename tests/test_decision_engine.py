@@ -186,11 +186,18 @@ class TestDecisionOutput:
 
 
 class TestDecisionEngineInit:
-    def test_defaults(self, mock_engine: MagicMock) -> None:
+    @patch(
+        "src.portfolio.decision_engine.load_tickers",
+        side_effect=FileNotFoundError,
+    )
+    def test_defaults(
+        self, _mock_cfg: MagicMock, mock_engine: MagicMock
+    ) -> None:
         eng = DecisionEngine(engine=mock_engine)
         assert eng.tickers == ["SPY", "NVDA", "AAPL", "QQQ"]
         assert eng.lookback_days == _DEFAULT_LOOKBACK_DAYS
-        assert eng.hrp_config is None
+        # Dynamic HRPConfig: 4 tickers → max_weight = min(0.25, 2/4) = 0.25
+        assert eng.hrp_config.max_weight == 0.25
 
     def test_custom_tickers(self, mock_engine: MagicMock) -> None:
         eng = DecisionEngine(
@@ -206,6 +213,34 @@ class TestDecisionEngineInit:
     def test_custom_lookback(self, mock_engine: MagicMock) -> None:
         eng = DecisionEngine(engine=mock_engine, lookback_days=252)
         assert eng.lookback_days == 252
+
+    def test_dynamic_max_weight_4_tickers(
+        self, mock_engine: MagicMock
+    ) -> None:
+        eng = DecisionEngine(
+            tickers=["A", "B", "C", "D"], engine=mock_engine
+        )
+        # min(0.25, 2/4) = min(0.25, 0.5) = 0.25
+        assert eng.hrp_config.max_weight == 0.25
+
+    def test_dynamic_max_weight_50_tickers(
+        self, mock_engine: MagicMock
+    ) -> None:
+        tickers = [f"T{i}" for i in range(50)]
+        eng = DecisionEngine(tickers=tickers, engine=mock_engine)
+        # min(0.25, 2/50) = min(0.25, 0.04) = 0.04
+        assert eng.hrp_config.max_weight == pytest.approx(0.04)
+
+    def test_explicit_config_not_overridden(
+        self, mock_engine: MagicMock
+    ) -> None:
+        cfg = HRPConfig(max_weight=0.10)
+        tickers = [f"T{i}" for i in range(50)]
+        eng = DecisionEngine(
+            tickers=tickers, engine=mock_engine, hrp_config=cfg
+        )
+        # Explicit config preserved, not overridden by dynamic calc
+        assert eng.hrp_config.max_weight == 0.10
 
 
 # ---------------------------------------------------------------------------

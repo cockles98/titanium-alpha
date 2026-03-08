@@ -1,4 +1,4 @@
-.PHONY: setup ingest predict decide test lint run clean
+.PHONY: setup ingest predict decide benchmark benchmark-fast test lint run clean
 
 # ── Setup ──────────────────────────────────────────────────
 setup:
@@ -16,6 +16,13 @@ predict:
 # ── Decision pipeline ────────────────────────────────────
 decide:
 	poetry run python -m src.portfolio.decision_engine
+
+# ── Benchmark ─────────────────────────────────────────────
+benchmark:
+	poetry run python -m src.backtest.run_benchmark
+
+benchmark-fast:
+	poetry run python -m src.backtest.run_benchmark --naive
 
 # ── Testing ────────────────────────────────────────────────
 test:

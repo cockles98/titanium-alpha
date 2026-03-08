@@ -446,7 +446,139 @@ docs: apenas documentação
 - Security scan: zero API keys hardcoded no código (grep confirmado)
 - Repositório organizado: sem arquivos temporários, sem outputs commitados
 
-### Projeto completo — Todas as 20 sessões concluídas
+### Fase 4b — Benchmark Real (Sessões 21+)
+
+**Sessão 21 — Configuração de Tickers** (concluída em 2026-03-07)
+- config/tickers.json: 52 tickers US + SPY benchmark
+- src/config.py: `load_ticker_config()`, `load_tickers()`, `load_benchmark()`
+  - Fallback para 4 tickers originais se config/tickers.json não existir
+  - Validação de campos obrigatórios (tickers, benchmark, market)
+  - Deep copy do fallback (evita mutação)
+- src/data/ingestion.py: `_resolve_tickers()` — tenta config, fallback para hardcoded
+- src/models/predict.py: usa `_resolve_tickers()` em vez de `DEFAULT_TICKERS`
+- src/portfolio/decision_engine.py: usa `_resolve_tickers()` com fallback
+- src/agents/graph.py: usa `_resolve_tickers()` no `run_agent_debate()`
+- tests/test_config.py: 13 testes (valid, minimal, missing keys, fallback, real config)
+
+**Sessão 22 — HRP max_weight Dinâmico** (concluída em 2026-03-07)
+- src/portfolio/decision_engine.py: `__init__` calcula `HRPConfig(max_weight=min(0.25, 2/n))`
+  - 4 tickers → max_weight=0.25 (backward compat)
+  - 50 tickers → max_weight=0.04 (4%)
+  - Config explícito nunca sobrescrito
+- tests/test_decision_engine.py: 3 testes novos (dynamic 4/50 tickers + explicit config)
+
+**Sessão 23 — Download Paralelo de Dados** (concluída em 2026-03-07)
+- src/data/ingestion.py: `MarketDataIngester` com novos parâmetros
+  - `start_date`/`end_date`: datas explícitas (necessário para walk-forward)
+  - `max_workers=5`: threads paralelas para download
+  - `_download_batch()`: `ThreadPoolExecutor` com stagger de 0.5s, falha parcial tolerada
+  - `run(parallel=True)`: paralelo por default, `parallel=False` para backward compat
+  - Tickers que falham são skipados (log error), não travam o pipeline
+  - Falha total (nenhum ticker baixado) → `RuntimeError`
+- tests/test_ingestion.py: 8 testes novos (parallel, partial failure, date range)
+
+**Sessão 24 — Walk-Forward Backtester** (concluída em 2026-03-07)
+- src/backtest/walk_forward.py: classe WalkForwardBacktester (NOVO — ~620 linhas)
+  - `ModelFactory` Protocol: `train(pl.DataFrame) -> None`, `predict(pl.DataFrame) -> dict[str, float]`
+  - `NaiveModelFactory`: momentum-based, confidence em [0.05, 0.95] (para validação rápida)
+  - `WalkForwardConfig` frozen dataclass: retrain_every=126, rebalance_every=5, lookback_days=504, initial_capital=1M, costs, min_rebalance_delta=0.02, rf=0.05
+  - `RebalanceRecord`: date, weights, turnover, costs, retrained
+  - `WalkForwardResult`: equity_curve, daily_returns, rebalance_history, metrics, config, metadata
+  - `run()` — loop principal com dois ciclos: retrain (lento, 126 dias) + rebalance (rápido, 5 dias)
+  - Weight drift via per-asset dollar tracking (holdings dict, não constant-mix)
+  - HRP com confidence tilt integrado (max_weight=min(0.25, 2/n))
+  - Benchmark buy-and-hold computado em paralelo
+  - `_compute_daily_returns()` — simple returns wide-format
+  - `_compute_log_returns_for_hrp()` — log returns filtrados por data e lookback
+  - `_apply_costs()` — turnover-based com TransactionCosts
+  - min_rebalance_delta: skip rebalance se turnover < threshold
+  - Zero look-ahead bias: todos os dados filtrados por `<= current_date`
+- tests/test_walk_forward.py: 38 testes (config, dataclasses, NaiveModelFactory, returns, costs, run, validation, drift, benchmark, look-ahead)
+- Quant-reviewer: APROVADO COM RESSALVAS
+  - Fix aplicado: constant-mix bug → per-asset dollar holdings tracking
+  - Fix aplicado: total_retrains counter independente
+  - Fix aplicado: market_impact_bps documentado como limitação (volume per-asset não disponível)
+  - Aceito (INFO): weight drift test usa random noise para variância HRP realista
+
+**Status dos testes:** 408 testes passando (17.06s, módulos disponíveis)
+
+**Sessão 25 — Métricas de Portfolio vs Benchmark** (concluída em 2026-03-07)
+- src/backtest/benchmark_metrics.py: módulo completo de métricas (NOVO)
+  - `compute_benchmark_metrics()` — função principal, retorna dict com 16 métricas
+  - **Retorno**: cagr, total_return, benchmark_total_return
+  - **Risco**: annualized_volatility, max_drawdown, max_drawdown_duration_days, calmar_ratio
+  - **Risk-adjusted**: sharpe_ratio, sortino_ratio
+  - **vs Benchmark**: information_ratio, alpha (Jensen's), beta (CAPM), tracking_error, hit_rate_monthly
+  - **Turnover**: avg_annual_turnover, avg_positions
+  - Helpers: `_cumulative_from_returns()`, `_compute_drawdown_series()`, `_max_drawdown_duration()`, `_compute_monthly_returns()`, `_capm_regression()` (OLS)
+  - Sortino: downside deviation per Sortino (1994) — E[min(r,0)²] sobre TODAS obs
+  - CAPM alpha: anualização linear (alpha_daily * 252) — aproximação documentada
+  - rf_daily = rf / 252 — aproximação linear (convenção padrão)
+- src/backtest/walk_forward.py: integração automática
+  - `run()` agora chama `compute_benchmark_metrics()` e preenche `result.metrics`
+  - Import lazy dentro do método (evita circular)
+- tests/test_benchmark_metrics.py: 40 testes (helpers, métricas individuais, edge cases, integração)
+- Quant-reviewer: APROVADO APÓS FIX
+  - Fix aplicado (ERROR): Sortino downside deviation — dividia por len(negative) em vez de n
+  - Aceito (WARNING): alpha annualization linear (convenção padrão)
+  - Aceito (WARNING): rf decomposition linear (diferença <2%)
+  - Zero look-ahead bias confirmado
+
+**Status dos testes:** 448 testes passando (18.15s, módulos disponíveis)
+
+**Sessão 26 — Relatório PDF do Benchmark** (concluída em 2026-03-07)
+- src/backtest/benchmark_report.py: classe BenchmarkReport (NOVO)
+  - `generate()` → PDF com 6 páginas via matplotlib + PdfPages
+  - **Página 1**: Equity curve portfolio vs benchmark (escala log)
+  - **Página 2**: Drawdown chart (área preenchida vermelha)
+  - **Página 3**: Tabela de métricas (16 métricas formatadas, cores alternadas)
+  - **Página 4**: Rolling Sharpe 252 dias (portfolio vs benchmark)
+  - **Página 5**: Heatmap de pesos HRP (top 15 ativos por peso médio)
+  - **Página 6**: Turnover por rebalanceo (bar chart, cores diferenciadas para retrain)
+  - Graceful degradation: dados insuficientes → mensagem no plot
+  - Helpers: `_compute_drawdown()`, `_rolling_sharpe()`, `_format_metrics_rows()`
+  - Output: `data/outputs/benchmark_report.pdf`
+- tests/test_benchmark_report.py: 19 testes (helpers, init, PDF generation, edge cases)
+
+**Status dos testes:** 467 testes passando (25.06s, módulos disponíveis)
+
+**Sessão 27 — Integração e Pipeline Completo** (concluída em 2026-03-07)
+- src/backtest/run_benchmark.py: script orquestrador (NOVO)
+  - `run_us_benchmark()` — pipeline 7 passos: config → OHLCV → OOS filter → model_factory → walk-forward → PDF → save
+  - `_load_ohlcv_from_postgres()` — carrega OHLCV do PostgreSQL para todos os tickers + benchmark
+  - `_filter_oos_period()` — filtra últimos n_years de dados
+  - `_resolve_model_factory()` — PatchTST (com fallback) ou NaiveModelFactory
+  - `_PatchTSTModelFactory` — adapter para TitaniumForecaster (ModelFactory protocol)
+  - `_save_outputs()` — salva equity.parquet, metrics.json, weights.parquet
+  - Aceita `ohlcv` pré-carregado (para testes e uso programático)
+  - PDF failure é non-fatal (try/except com warning)
+  - CLI: `python -m src.backtest.run_benchmark [--naive]`
+- WalkForwardConfig: rebalance_every=5, retrain_every=126, costs(5bps+10bps), min_delta=0.02
+- Makefile: targets `benchmark` e `benchmark-fast` adicionados
+- Output: `data/outputs/benchmark_{equity,metrics,weights,report}.*`
+- tests/test_run_benchmark.py: 15 testes (filter, model_factory, save, e2e integration)
+
+**Status dos testes:** 482 testes passando (33.11s, módulos disponíveis)
+
+**Sessão 28 — Dashboard: Aba de Benchmark** (concluída em 2026-03-07)
+- src/dashboard/app.py: nova aba "Benchmark" (tab 0, antes de Performance)
+  - **Equity curve**: Plotly interativo, portfolio vs benchmark, toggle log scale
+  - **Drawdown chart**: área preenchida vermelha com drawdown percentual
+  - **Tabela de métricas**: 16 métricas com formatação condicional (verde/vermelho)
+  - **Rolling Sharpe**: slider de janela (60-504 dias), portfolio vs benchmark
+  - **Weight heatmap**: top 15 ativos por peso médio, evolução ao longo do tempo
+  - Graceful degradation: mensagem informativa quando dados ausentes
+- Data loaders: `load_benchmark_equity()`, `load_benchmark_metrics()`, `load_benchmark_weights()`
+  - Todos com `@st.cache_data(ttl=300)` e return None se arquivo ausente
+  - Lê: benchmark_equity.parquet, benchmark_metrics.json, benchmark_weights.parquet
+- Helpers: `_format_metric_value()`, `_metric_color()`, `_chart_benchmark_equity()`,
+  `_chart_benchmark_drawdown()`, `_chart_rolling_sharpe()`, `_chart_weight_heatmap()`
+- tests/test_dashboard.py: 18 testes novos (loaders, formatting, charts)
+- Dashboard agora tem 4 abas: Benchmark, Performance, War Room, Microstructure
+
+**Status dos testes:** 500 testes passando (32.02s, módulos disponíveis)
+
+### Fase 4b Benchmark — Completa (Sessões 21-28)
 
 ## O que NUNCA fazer
 - Nunca hardcode API keys (usar .env + python-dotenv)

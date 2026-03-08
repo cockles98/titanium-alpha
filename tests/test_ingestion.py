@@ -6,6 +6,7 @@ tests run offline and fast.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from unittest.mock import MagicMock, call, patch
 
 import pandas as pd
@@ -251,28 +252,21 @@ class TestEnsureTable:
 class TestRun:
 
     @patch("src.data.ingestion.yf.download")
-    def test_run_orchestrates_all_tickers(
+    def test_run_sequential_orchestrates_all_tickers(
         self,
         mock_yf_download: MagicMock,
         sample_yf_dataframe: pd.DataFrame,
         mock_engine: MagicMock,
     ) -> None:
-        # Return a fresh copy each call so in-place column mutation
-        # on the Pandas DataFrame does not corrupt subsequent calls.
         mock_yf_download.side_effect = lambda *a, **kw: sample_yf_dataframe.copy()
         tickers = ["SPY", "NVDA"]
         ingester = MarketDataIngester(engine=mock_engine, tickers=tickers)
 
-        result = ingester.run()
+        result = ingester.run(parallel=False)
 
-        # _ensure_table called once at the start, then begin() once per _save
-        # Total begin() calls: 1 (ensure_table) + 2 (save per ticker) = 3
+        # _ensure_table (1) + _save per ticker (2) = 3
         assert mock_engine.begin.call_count == 3
-
-        # yf.download called once per ticker
         assert mock_yf_download.call_count == len(tickers)
-
-        # Result is a concatenated DataFrame
         assert isinstance(result, pl.DataFrame)
         assert result.height == len(sample_yf_dataframe) * len(tickers)
 
@@ -283,15 +277,12 @@ class TestRun:
         sample_yf_dataframe: pd.DataFrame,
         mock_engine: MagicMock,
     ) -> None:
-        # Return a fresh copy each call to avoid in-place mutation issues.
         mock_yf_download.side_effect = lambda *a, **kw: sample_yf_dataframe.copy()
         tickers = ["SPY", "AAPL"]
         ingester = MarketDataIngester(engine=mock_engine, tickers=tickers)
 
-        result = ingester.run()
+        result = ingester.run(parallel=False)
 
-        # Each ticker should appear in the result (ticker column is set
-        # by _download_ticker based on the ticker argument, not the DF).
         result_tickers = result["ticker"].unique().sort().to_list()
         assert result_tickers == sorted(tickers)
 
@@ -367,3 +358,147 @@ class TestNaNHandling:
         # NaN in Polars becomes null
         assert result["open"][1] is None
         assert result["adj_close"][0] is None
+
+
+# ---------------------------------------------------------------------------
+# 11. Parallel download
+# ---------------------------------------------------------------------------
+
+
+class TestParallelDownload:
+
+    @patch("src.data.ingestion.time.sleep")
+    @patch("src.data.ingestion.yf.download")
+    def test_parallel_downloads_all_tickers(
+        self,
+        mock_yf_download: MagicMock,
+        mock_sleep: MagicMock,
+        sample_yf_dataframe: pd.DataFrame,
+        mock_engine: MagicMock,
+    ) -> None:
+        mock_yf_download.side_effect = lambda *a, **kw: sample_yf_dataframe.copy()
+        tickers = ["SPY", "NVDA", "AAPL"]
+        ingester = MarketDataIngester(engine=mock_engine, tickers=tickers)
+
+        result = ingester.run(parallel=True)
+
+        assert mock_yf_download.call_count == 3
+        assert isinstance(result, pl.DataFrame)
+        assert result["ticker"].unique().sort().to_list() == sorted(tickers)
+
+    @patch("src.data.ingestion.time.sleep")
+    @patch("src.data.ingestion.yf.download")
+    def test_parallel_partial_failure_skips_bad_ticker(
+        self,
+        mock_yf_download: MagicMock,
+        mock_sleep: MagicMock,
+        sample_yf_dataframe: pd.DataFrame,
+        mock_engine: MagicMock,
+    ) -> None:
+        """When one ticker fails all retries, others still succeed."""
+        def _side_effect(*args: object, **kwargs: object) -> pd.DataFrame:
+            # yf.download is called with ticker as first positional arg
+            called_ticker = args[0] if args else kwargs.get("tickers", "")
+            if called_ticker == "BAD":
+                raise ConnectionError("always fails")
+            return sample_yf_dataframe.copy()
+
+        mock_yf_download.side_effect = _side_effect
+        tickers = ["SPY", "BAD", "AAPL"]
+        ingester = MarketDataIngester(
+            engine=mock_engine, tickers=tickers, max_retries=1
+        )
+
+        result = ingester.run(parallel=True)
+
+        # BAD failed, but SPY and AAPL succeeded
+        result_tickers = result["ticker"].unique().sort().to_list()
+        assert "BAD" not in result_tickers
+        assert "SPY" in result_tickers
+        assert "AAPL" in result_tickers
+
+    @patch("src.data.ingestion.time.sleep")
+    @patch("src.data.ingestion.yf.download")
+    def test_parallel_all_fail_raises(
+        self,
+        mock_yf_download: MagicMock,
+        mock_sleep: MagicMock,
+        mock_engine: MagicMock,
+    ) -> None:
+        mock_yf_download.side_effect = ConnectionError("down")
+        ingester = MarketDataIngester(
+            engine=mock_engine, tickers=["A", "B"], max_retries=1
+        )
+
+        with pytest.raises(RuntimeError, match="No tickers could be downloaded"):
+            ingester.run(parallel=True)
+
+    @patch("src.data.ingestion.time.sleep")
+    @patch("src.data.ingestion.yf.download")
+    def test_single_ticker_uses_sequential(
+        self,
+        mock_yf_download: MagicMock,
+        mock_sleep: MagicMock,
+        sample_yf_dataframe: pd.DataFrame,
+        mock_engine: MagicMock,
+    ) -> None:
+        """With a single ticker, parallel=True still works (sequential path)."""
+        mock_yf_download.return_value = sample_yf_dataframe
+        ingester = MarketDataIngester(engine=mock_engine, tickers=["SPY"])
+
+        result = ingester.run(parallel=True)
+
+        assert result.height == len(sample_yf_dataframe)
+
+
+# ---------------------------------------------------------------------------
+# 12. start_date / end_date support
+# ---------------------------------------------------------------------------
+
+
+class TestDateRange:
+
+    def test_start_date_overrides_years(self, mock_engine: MagicMock) -> None:
+        ingester = MarketDataIngester(
+            engine=mock_engine,
+            tickers=["SPY"],
+            start_date=date(2016, 1, 1),
+            end_date=date(2026, 1, 1),
+            years=5,  # should be ignored
+        )
+        assert ingester.start_date == date(2016, 1, 1)
+        assert ingester.end_date == date(2026, 1, 1)
+
+    def test_years_fallback(self, mock_engine: MagicMock) -> None:
+        ingester = MarketDataIngester(
+            engine=mock_engine, tickers=["SPY"], years=10
+        )
+        expected_start = ingester.end_date - timedelta(days=10 * 365)
+        assert ingester.start_date == expected_start
+
+    def test_end_date_defaults_to_today(self, mock_engine: MagicMock) -> None:
+        ingester = MarketDataIngester(
+            engine=mock_engine, tickers=["SPY"]
+        )
+        assert ingester.end_date == date.today()
+
+    @patch("src.data.ingestion.yf.download")
+    def test_download_uses_configured_dates(
+        self,
+        mock_yf_download: MagicMock,
+        sample_yf_dataframe: pd.DataFrame,
+        mock_engine: MagicMock,
+    ) -> None:
+        mock_yf_download.return_value = sample_yf_dataframe
+        ingester = MarketDataIngester(
+            engine=mock_engine,
+            tickers=["SPY"],
+            start_date=date(2020, 6, 1),
+            end_date=date(2025, 6, 1),
+        )
+
+        ingester._download_ticker("SPY")
+
+        _, kwargs = mock_yf_download.call_args
+        assert kwargs["start"] == "2020-06-01"
+        assert kwargs["end"] == "2025-06-01"

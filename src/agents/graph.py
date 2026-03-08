@@ -535,9 +535,9 @@ def run_agent_debate(
             - Dict mapping ticker to the full graph state (reports,
               debate_log, predictions, etc.) for dashboard consumption.
     """
-    from src.data.ingestion import DEFAULT_TICKERS
+    from src.data.ingestion import _resolve_tickers
 
-    tickers = tickers or DEFAULT_TICKERS
+    tickers = _resolve_tickers(tickers)
     graph = build_investment_graph()
     decisions: list[FinalDecision] = []
     full_states: dict[str, dict] = {}

@@ -6,6 +6,7 @@ import json
 import queue
 import sys
 import types
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -14,12 +15,20 @@ import pytest
 
 from src.dashboard.app import (
     AGENT_STYLES,
+    _METRIC_LABELS,
     _NODE_TO_AGENT,
+    _chart_benchmark_drawdown,
+    _chart_benchmark_equity,
     _chart_quantile_fan,
     _chart_weight_comparison,
     _chart_weight_donut,
+    _format_metric_value,
+    _metric_color,
     _replay_debate,
     _run_live_debate_thread,
+    load_benchmark_equity,
+    load_benchmark_metrics,
+    load_benchmark_weights,
     load_debate_history,
     load_decisions,
 )
@@ -462,3 +471,159 @@ class TestLiveDebateThread:
         assert events[1][0] == "node"
         assert events[1][2] == "bear"
         assert events[2][0] == "done"
+
+
+# ---------------------------------------------------------------------------
+# TestBenchmarkLoaders
+# ---------------------------------------------------------------------------
+
+
+class TestBenchmarkLoaders:
+    def test_load_benchmark_equity_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("src.dashboard.app.DATA_DIR", tmp_path)
+        load_benchmark_equity.clear()
+        result = load_benchmark_equity()
+        assert result is None
+
+    def test_load_benchmark_equity_valid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import polars as pl
+
+        monkeypatch.setattr("src.dashboard.app.DATA_DIR", tmp_path)
+        df = pl.DataFrame({
+            "date": [date(2020, 1, 2), date(2020, 1, 3)],
+            "portfolio_value": [1_000_000.0, 1_010_000.0],
+            "benchmark_value": [1_000_000.0, 1_005_000.0],
+        })
+        df.write_parquet(tmp_path / "benchmark_equity.parquet")
+        load_benchmark_equity.clear()
+        result = load_benchmark_equity()
+        assert result is not None
+        assert result.height == 2
+
+    def test_load_benchmark_metrics_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("src.dashboard.app.DATA_DIR", tmp_path)
+        load_benchmark_metrics.clear()
+        result = load_benchmark_metrics()
+        assert result is None
+
+    def test_load_benchmark_metrics_valid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("src.dashboard.app.DATA_DIR", tmp_path)
+        metrics = {"sharpe_ratio": 0.85, "cagr": 0.12}
+        (tmp_path / "benchmark_metrics.json").write_text(
+            json.dumps(metrics), encoding="utf-8"
+        )
+        load_benchmark_metrics.clear()
+        result = load_benchmark_metrics()
+        assert result is not None
+        assert result["sharpe_ratio"] == 0.85
+
+    def test_load_benchmark_weights_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("src.dashboard.app.DATA_DIR", tmp_path)
+        load_benchmark_weights.clear()
+        result = load_benchmark_weights()
+        assert result is None
+
+    def test_load_benchmark_weights_valid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import polars as pl
+
+        monkeypatch.setattr("src.dashboard.app.DATA_DIR", tmp_path)
+        df = pl.DataFrame({
+            "date": [date(2020, 1, 2)] * 2,
+            "ticker": ["A", "B"],
+            "weight": [0.6, 0.4],
+            "turnover": [1.0, 1.0],
+            "costs": [100.0, 100.0],
+            "retrained": [True, True],
+        })
+        df.write_parquet(tmp_path / "benchmark_weights.parquet")
+        load_benchmark_weights.clear()
+        result = load_benchmark_weights()
+        assert result is not None
+        assert result.height == 2
+
+
+# ---------------------------------------------------------------------------
+# TestBenchmarkFormatting
+# ---------------------------------------------------------------------------
+
+
+class TestBenchmarkFormatting:
+    def test_format_metric_pct(self) -> None:
+        assert _format_metric_value("cagr", 0.1234) == "12.34%"
+
+    def test_format_metric_duration(self) -> None:
+        assert _format_metric_value("max_drawdown_duration_days", 45.0) == "45"
+
+    def test_format_metric_alpha(self) -> None:
+        assert _format_metric_value("alpha", 0.0312) == "0.0312"
+
+    def test_format_metric_default(self) -> None:
+        assert _format_metric_value("sharpe_ratio", 1.234) == "1.234"
+
+    def test_metric_color_positive_sharpe(self) -> None:
+        color = _metric_color("sharpe_ratio", 1.5)
+        assert color == "#43A047"  # green
+
+    def test_metric_color_negative_sharpe(self) -> None:
+        color = _metric_color("sharpe_ratio", -0.5)
+        assert color == "#E53935"  # red
+
+    def test_metric_color_drawdown_bad(self) -> None:
+        color = _metric_color("max_drawdown", -0.25)
+        assert color == "#E53935"  # red
+
+    def test_metric_color_drawdown_mild(self) -> None:
+        color = _metric_color("max_drawdown", -0.05)
+        assert color == "#43A047"  # green
+
+    def test_metric_labels_cover_all(self) -> None:
+        assert len(_METRIC_LABELS) == 16
+
+
+# ---------------------------------------------------------------------------
+# TestBenchmarkCharts
+# ---------------------------------------------------------------------------
+
+
+class TestBenchmarkCharts:
+    @pytest.fixture()
+    def sample_equity(self) -> Any:
+        import polars as pl
+
+        from datetime import date, timedelta
+
+        dates = [date(2020, 1, 2) + timedelta(days=i) for i in range(100)]
+        port = [1_000_000.0 * (1.001 ** i) for i in range(100)]
+        bench = [1_000_000.0 * (1.0005 ** i) for i in range(100)]
+        return pl.DataFrame({
+            "date": dates,
+            "portfolio_value": port,
+            "benchmark_value": bench,
+        })
+
+    def test_equity_chart_linear(self, sample_equity: Any) -> None:
+        fig = _chart_benchmark_equity(sample_equity, log_scale=False)
+        assert fig is not None
+        assert len(fig.data) == 2
+
+    def test_equity_chart_log(self, sample_equity: Any) -> None:
+        fig = _chart_benchmark_equity(sample_equity, log_scale=True)
+        assert fig.layout.yaxis.type == "log"
+
+    def test_drawdown_chart(self, sample_equity: Any) -> None:
+        fig = _chart_benchmark_drawdown(sample_equity)
+        assert fig is not None
+        assert len(fig.data) == 1
+        assert fig.data[0].fill == "tozeroy"

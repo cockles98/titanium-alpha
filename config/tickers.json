@@ -1,0 +1,17 @@
+{
+    "market": "US",
+    "benchmark": "SPY",
+    "tickers": [
+        "AAPL", "MSFT", "GOOG", "AMZN", "META", "NVDA", "TSLA", "AVGO", "CRM", "AMD",
+        "JPM", "BAC", "GS", "MS", "WFC", "BLK", "AXP", "C",
+        "UNH", "JNJ", "LLY", "PFE", "ABBV", "MRK", "TMO",
+        "PG", "KO", "PEP", "COST", "WMT", "HD", "MCD",
+        "XOM", "CVX", "COP", "SLB",
+        "CAT", "HON", "UPS", "BA", "GE", "RTX",
+        "NEE", "DUK", "AMT", "PLD",
+        "DIS", "NFLX", "CMCSA",
+        "LIN", "APD", "NEM"
+    ],
+    "trading_days_per_year": 252,
+    "risk_free_rate": 0.05
+}

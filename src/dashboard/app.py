@@ -1,6 +1,8 @@
 """Streamlit dashboard for Titanium Alpha hedge fund.
 
-Three tabs:
+Four tabs:
+    0. **Benchmark** -- walk-forward equity curve, drawdown, metrics, rolling
+       Sharpe, weight heatmap
     1. **Performance** -- portfolio weights donut, decision table, metric cards
     2. **War Room** -- agent debate replay with per-agent chat bubbles
     3. **Microstructure** -- PatchTST quantile fan chart per ticker
@@ -136,6 +138,399 @@ def load_predictions() -> dict[str, dict[str, Any]] | None:
         return result
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Benchmark data loaders (cached)
+# ---------------------------------------------------------------------------
+
+
+@st.cache_data(ttl=300)
+def load_benchmark_equity() -> Any | None:
+    """Load benchmark_equity.parquet. Returns Polars DataFrame or None."""
+    path = DATA_DIR / "benchmark_equity.parquet"
+    if not path.exists():
+        return None
+    try:
+        import polars as pl
+
+        return pl.read_parquet(path)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=300)
+def load_benchmark_metrics() -> dict[str, float] | None:
+    """Load benchmark_metrics.json. Returns dict or None."""
+    path = DATA_DIR / "benchmark_metrics.json"
+    if not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=300)
+def load_benchmark_weights() -> Any | None:
+    """Load benchmark_weights.parquet. Returns Polars DataFrame or None."""
+    path = DATA_DIR / "benchmark_weights.parquet"
+    if not path.exists():
+        return None
+    try:
+        import polars as pl
+
+        return pl.read_parquet(path)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Tab 0: Benchmark
+# ---------------------------------------------------------------------------
+
+
+def _format_metric_value(key: str, value: float) -> str:
+    """Format a metric value for display."""
+    pct_keys = {
+        "cagr", "total_return", "benchmark_total_return",
+        "annualized_volatility", "max_drawdown", "tracking_error",
+        "hit_rate_monthly",
+    }
+    if key in pct_keys:
+        return f"{value:.2%}"
+    if key == "max_drawdown_duration_days":
+        return f"{value:.0f}"
+    if key in ("alpha",):
+        return f"{value:.4f}"
+    return f"{value:.3f}"
+
+
+def _metric_color(key: str, value: float) -> str:
+    """Return green if metric is favorable, red if unfavorable."""
+    # Higher is better
+    higher_better = {
+        "cagr", "total_return", "sharpe_ratio", "sortino_ratio",
+        "calmar_ratio", "information_ratio", "alpha", "hit_rate_monthly",
+    }
+    # Lower is better (less negative)
+    lower_better = {"max_drawdown", "max_drawdown_duration_days"}
+    # Neutral
+    neutral = {
+        "beta", "annualized_volatility", "tracking_error",
+        "benchmark_total_return", "avg_annual_turnover", "avg_positions",
+    }
+
+    if key in higher_better:
+        return _ACCENT_GREEN if value > 0 else _ACCENT_RED
+    if key in lower_better:
+        return _ACCENT_RED if value < -0.10 else _ACCENT_GREEN
+    return _TEXT
+
+
+_METRIC_LABELS: dict[str, str] = {
+    "cagr": "CAGR",
+    "total_return": "Total Return",
+    "benchmark_total_return": "Benchmark Return",
+    "annualized_volatility": "Ann. Volatility",
+    "max_drawdown": "Max Drawdown",
+    "max_drawdown_duration_days": "Max DD Duration (days)",
+    "calmar_ratio": "Calmar Ratio",
+    "sharpe_ratio": "Sharpe Ratio",
+    "sortino_ratio": "Sortino Ratio",
+    "information_ratio": "Information Ratio",
+    "alpha": "Alpha (ann.)",
+    "beta": "Beta",
+    "tracking_error": "Tracking Error",
+    "hit_rate_monthly": "Monthly Hit Rate",
+    "avg_annual_turnover": "Avg Annual Turnover",
+    "avg_positions": "Avg Positions",
+}
+
+
+def _chart_benchmark_equity(equity_df: Any, log_scale: bool = False) -> go.Figure:
+    """Plotly equity curve: portfolio vs benchmark."""
+    dates = equity_df["date"].to_list()
+    portfolio = equity_df["portfolio_value"].to_list()
+    benchmark = equity_df["benchmark_value"].to_list()
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=portfolio, name="Portfolio",
+        line=dict(color=_ACCENT_BLUE, width=2),
+    ))
+    fig.add_trace(go.Scatter(
+        x=dates, y=benchmark, name="Benchmark (SPY)",
+        line=dict(color=_ACCENT_GOLD, width=2, dash="dash"),
+    ))
+
+    yaxis_type = "log" if log_scale else "linear"
+    fig.update_layout(
+        title=dict(text="Equity Curve — Portfolio vs Benchmark", font=dict(size=16, color=_TEXT)),
+        xaxis_title="Date",
+        yaxis_title="Portfolio Value",
+        yaxis_type=yaxis_type,
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        legend=dict(font=dict(color=_TEXT)),
+        height=450,
+        margin=dict(t=50, b=40, l=60, r=20),
+    )
+    return fig
+
+
+def _chart_benchmark_drawdown(equity_df: Any) -> go.Figure:
+    """Plotly drawdown chart (filled area)."""
+    dates = equity_df["date"].to_list()
+    values = equity_df["portfolio_value"].to_list()
+
+    # Compute drawdown
+    peak = values[0]
+    dd = []
+    for v in values:
+        if v > peak:
+            peak = v
+        dd.append((v - peak) / peak if peak != 0 else 0.0)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=dd, fill="tozeroy", name="Drawdown",
+        line=dict(color=_ACCENT_RED, width=1),
+        fillcolor="rgba(229, 57, 53, 0.3)",
+    ))
+
+    fig.update_layout(
+        title=dict(text="Portfolio Drawdown", font=dict(size=16, color=_TEXT)),
+        xaxis_title="Date",
+        yaxis_title="Drawdown",
+        yaxis_tickformat=".0%",
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        height=350,
+        margin=dict(t=50, b=40, l=60, r=20),
+    )
+    return fig
+
+
+def _chart_rolling_sharpe(equity_df: Any, window: int = 252) -> go.Figure | None:
+    """Rolling Sharpe ratio chart. Returns None if insufficient data."""
+    import math
+
+    try:
+        import polars as pl
+        dr_path = DATA_DIR / "benchmark_equity.parquet"
+        df = pl.read_parquet(dr_path)
+    except Exception:
+        return None
+
+    portfolio = df["portfolio_value"].to_list()
+    benchmark = df["benchmark_value"].to_list()
+    dates = df["date"].to_list()
+
+    if len(portfolio) < window + 1:
+        return None
+
+    # Compute daily returns from equity values
+    port_rets = [0.0] + [(portfolio[i] / portfolio[i - 1] - 1.0) for i in range(1, len(portfolio))]
+    bench_rets = [0.0] + [(benchmark[i] / benchmark[i - 1] - 1.0) for i in range(1, len(benchmark))]
+
+    # Rolling Sharpe
+    def _rolling(rets: list[float], w: int) -> list[float | None]:
+        result: list[float | None] = [None] * (w - 1)
+        for i in range(w - 1, len(rets)):
+            chunk = rets[i - w + 1: i + 1]
+            mean_r = sum(chunk) / len(chunk)
+            var_r = sum((r - mean_r) ** 2 for r in chunk) / (len(chunk) - 1)
+            std_r = math.sqrt(var_r) if var_r > 0 else 0.0
+            sharpe = (mean_r / std_r) * math.sqrt(252) if std_r > 0 else 0.0
+            result.append(sharpe)
+        return result
+
+    port_sharpe = _rolling(port_rets, window)
+    bench_sharpe = _rolling(bench_rets, window)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=port_sharpe, name="Portfolio",
+        line=dict(color=_ACCENT_BLUE, width=1.5),
+    ))
+    fig.add_trace(go.Scatter(
+        x=dates, y=bench_sharpe, name="Benchmark",
+        line=dict(color=_ACCENT_GOLD, width=1.5, dash="dash"),
+    ))
+    fig.add_hline(y=0, line_dash="dot", line_color="gray", opacity=0.5)
+
+    fig.update_layout(
+        title=dict(text=f"Rolling {window}-Day Sharpe Ratio", font=dict(size=16, color=_TEXT)),
+        xaxis_title="Date",
+        yaxis_title="Sharpe Ratio",
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        legend=dict(font=dict(color=_TEXT)),
+        height=400,
+        margin=dict(t=50, b=40, l=60, r=20),
+    )
+    return fig
+
+
+def _chart_weight_heatmap(weights_df: Any) -> go.Figure | None:
+    """Plotly heatmap of top 15 asset weights over time."""
+    try:
+        import polars as pl
+    except ImportError:
+        return None
+
+    if weights_df is None or weights_df.height < 2:
+        return None
+
+    # Compute average weight per ticker
+    avg = weights_df.group_by("ticker").agg(pl.col("weight").mean().alias("avg_w"))
+    top_tickers = (
+        avg.sort("avg_w", descending=True)
+        .head(15)["ticker"]
+        .to_list()
+    )
+
+    # Filter to top tickers
+    filtered = weights_df.filter(pl.col("ticker").is_in(top_tickers))
+
+    # Pivot: rows=tickers, cols=dates
+    pivot = filtered.pivot(on="date", index="ticker", values="weight").fill_null(0.0)
+
+    # Order tickers by average weight
+    ticker_order = top_tickers
+    date_cols = [c for c in pivot.columns if c != "ticker"]
+
+    z_data = []
+    y_labels = []
+    for t in ticker_order:
+        row = pivot.filter(pl.col("ticker") == t)
+        if row.height > 0:
+            z_data.append([row[c][0] for c in date_cols])
+            y_labels.append(t)
+
+    if not z_data:
+        return None
+
+    fig = go.Figure(data=go.Heatmap(
+        z=z_data,
+        x=date_cols,
+        y=y_labels,
+        colorscale="YlOrRd",
+        zmin=0,
+        colorbar=dict(title="Weight", tickformat=".0%"),
+    ))
+
+    fig.update_layout(
+        title=dict(text=f"Top {len(y_labels)} Assets — Weight Evolution", font=dict(size=16, color=_TEXT)),
+        xaxis_title="Rebalance Date",
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        height=450,
+        margin=dict(t=50, b=80, l=80, r=20),
+    )
+    return fig
+
+
+def tab_benchmark(
+    equity_df: Any | None,
+    metrics: dict[str, float] | None,
+    weights_df: Any | None,
+) -> None:
+    """Render the Benchmark tab."""
+    st.header("Benchmark — Walk-Forward Backtest")
+
+    if equity_df is None:
+        st.warning(
+            "No benchmark data found. Run `make benchmark-fast` to generate "
+            "benchmark results."
+        )
+        return
+
+    # Equity curve with log toggle
+    col_toggle, _ = st.columns([1, 4])
+    with col_toggle:
+        log_scale = st.checkbox("Log scale", value=False, key="bench_log")
+
+    fig_equity = _chart_benchmark_equity(equity_df, log_scale=log_scale)
+    st.plotly_chart(fig_equity, use_container_width=True)
+
+    # Drawdown
+    fig_dd = _chart_benchmark_drawdown(equity_df)
+    st.plotly_chart(fig_dd, use_container_width=True)
+
+    st.divider()
+
+    # Metrics table
+    if metrics:
+        st.subheader("Performance Metrics")
+        # Split metrics into two columns
+        keys = list(_METRIC_LABELS.keys())
+        mid = len(keys) // 2
+        col_left, col_right = st.columns(2)
+
+        with col_left:
+            for key in keys[:mid]:
+                if key in metrics:
+                    val = metrics[key]
+                    color = _metric_color(key, val)
+                    label = _METRIC_LABELS[key]
+                    formatted = _format_metric_value(key, val)
+                    st.markdown(
+                        f"<div style='display:flex; justify-content:space-between; "
+                        f"padding:4px 8px; border-bottom:1px solid #333;'>"
+                        f"<span style='color:#aaa;'>{label}</span>"
+                        f"<span style='color:{color}; font-weight:bold;'>{formatted}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+        with col_right:
+            for key in keys[mid:]:
+                if key in metrics:
+                    val = metrics[key]
+                    color = _metric_color(key, val)
+                    label = _METRIC_LABELS[key]
+                    formatted = _format_metric_value(key, val)
+                    st.markdown(
+                        f"<div style='display:flex; justify-content:space-between; "
+                        f"padding:4px 8px; border-bottom:1px solid #333;'>"
+                        f"<span style='color:#aaa;'>{label}</span>"
+                        f"<span style='color:{color}; font-weight:bold;'>{formatted}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+    else:
+        st.info("No metrics available.")
+
+    st.divider()
+
+    # Rolling Sharpe with slider
+    st.subheader("Rolling Sharpe Ratio")
+    window = st.slider(
+        "Window (days)", min_value=60, max_value=504,
+        value=252, step=21, key="bench_sharpe_window",
+    )
+    fig_sharpe = _chart_rolling_sharpe(equity_df, window=window)
+    if fig_sharpe:
+        st.plotly_chart(fig_sharpe, use_container_width=True)
+    else:
+        st.info(f"Insufficient data for {window}-day rolling Sharpe.")
+
+    st.divider()
+
+    # Weight heatmap
+    st.subheader("Portfolio Weight Evolution")
+    fig_heatmap = _chart_weight_heatmap(weights_df)
+    if fig_heatmap:
+        st.plotly_chart(fig_heatmap, use_container_width=True)
+    else:
+        st.info("No weight history available.")
 
 
 # ---------------------------------------------------------------------------
@@ -831,11 +1226,17 @@ def main() -> None:
     debate = load_debate_history()
     forecast = load_forecast()
     predictions = load_predictions()
+    bench_equity = load_benchmark_equity()
+    bench_metrics = load_benchmark_metrics()
+    bench_weights = load_benchmark_weights()
 
     # Tabs
-    tab1, tab2, tab3 = st.tabs(
-        ["📈 Performance", "⚔️ War Room", "🔬 Microstructure"]
+    tab0, tab1, tab2, tab3 = st.tabs(
+        ["📊 Benchmark", "📈 Performance", "⚔️ War Room", "🔬 Microstructure"]
     )
+
+    with tab0:
+        tab_benchmark(bench_equity, bench_metrics, bench_weights)
 
     with tab1:
         if decisions:

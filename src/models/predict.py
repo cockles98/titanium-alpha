@@ -14,7 +14,7 @@ import polars as pl
 from loguru import logger
 from sqlalchemy import Engine
 
-from src.data.ingestion import DEFAULT_TICKERS, OHLCV_TABLE
+from src.data.ingestion import OHLCV_TABLE, _resolve_tickers
 from src.models.features import compute_all_features
 from src.models.patchtst_model import TitaniumForecaster
 from src.utils.db import get_postgres_engine
@@ -42,7 +42,7 @@ class PredictionPipeline:
     ) -> None:
         self.engine = engine or get_postgres_engine()
         self.output_dir = Path(output_dir)
-        self.tickers = tickers or DEFAULT_TICKERS
+        self.tickers = _resolve_tickers(tickers)
         self.val_size = val_size
         self.max_steps = max_steps
 
