@@ -53,6 +53,10 @@ class HRPConfig:
             ``"ward"`` creates more balanced clusters.
         correlation_method: ``"pearson"`` (default, consistent with HRP
             literature) or ``"spearman"`` (more robust to outliers).
+        shrinkage: When ``True``, use Ledoit-Wolf shrinkage estimator
+            instead of sample covariance.  Produces more stable weights
+            and lower turnover, especially when ``n_obs`` is close to
+            ``n_assets``.
         confidence_tilt_cap: Maximum adjustment factor applied to raw
             HRP weights based on agent confidence.  A cap of 0.20 means
             weights are scaled by at most ±10% (at confidence extremes
@@ -65,6 +69,7 @@ class HRPConfig:
 
     linkage_method: str = "single"
     correlation_method: str = "pearson"
+    shrinkage: bool = False
     confidence_tilt_cap: float = 0.20
     min_weight: float = 0.0
     max_weight: float = 0.25
@@ -146,10 +151,11 @@ class HRPOptimizer:
             )
 
         logger.info(
-            "HRPOptimizer: linkage={}, correlation={}, tilt_cap={}, "
-            "max_weight={}",
+            "HRPOptimizer: linkage={}, correlation={}, shrinkage={}, "
+            "tilt_cap={}, max_weight={}",
             self.config.linkage_method,
             self.config.correlation_method,
+            self.config.shrinkage,
             self.config.confidence_tilt_cap,
             self.config.max_weight,
         )
@@ -163,6 +169,12 @@ class HRPOptimizer:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Compute covariance and correlation matrices from returns.
 
+        When ``config.shrinkage`` is ``True``, uses the Ledoit-Wolf
+        shrinkage estimator (``sklearn.covariance.LedoitWolf``) instead
+        of the sample covariance.  This produces a better-conditioned
+        covariance matrix, especially when the number of observations is
+        close to the number of assets.
+
         Args:
             returns: DataFrame where each column is a ticker's return
                 series.
@@ -172,7 +184,18 @@ class HRPOptimizer:
         """
         arr = returns.to_numpy()
 
-        cov = np.cov(arr, rowvar=False, ddof=1)
+        if self.config.shrinkage:
+            from sklearn.covariance import LedoitWolf
+
+            lw = LedoitWolf().fit(arr)
+            cov = lw.covariance_
+            logger.info(
+                "Ledoit-Wolf shrinkage applied (shrinkage_={:.4f})",
+                lw.shrinkage_,
+            )
+        else:
+            cov = np.cov(arr, rowvar=False, ddof=1)
+
         # Ensure 2-D for single-asset edge case
         cov = np.atleast_2d(cov)
 

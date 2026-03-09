@@ -580,6 +580,74 @@ docs: apenas documentação
 
 ### Fase 4b Benchmark — Completa (Sessões 21-28)
 
+### Fase 5 — Melhorias do Benchmark (Sessões 29+)
+
+**Sessão 29 — CPCV-OOS Parameter Validator** (concluída em 2026-03-08)
+- src/backtest/cpcv_oos.py: módulo de validação CPCV-OOS (NOVO — ~760 linhas)
+  - `CPCVParameterValidator`: valida configs walk-forward via CPCV no período OOS
+  - Divide OOS em `n_splits=6` blocos temporais, gera `C(n_splits, n_test_groups)` paths
+  - `_PurgedModelFactory`: wrapper que exclui test+embargo dates do `train()` do modelo
+  - `copy.deepcopy(model_factory)` por path — previne contaminação cross-path
+  - `_evaluate_path()` → `tuple[float, list[float]]` — (Sharpe, test returns)
+  - `_get_test_dates()` / `_get_train_dates()` — extração de datas com embargo
+  - `_filter_ohlcv_by_dates()` — helper de filtragem
+  - `validate()` — roda backtester em cada path, agrega Sharpes, computa DSR
+  - `grid_search()` — valida múltiplos configs, ranked por DSR
+  - Aceitação: `pct_positive >= 0.6667 AND dsr_pvalue > 0.95`
+  - `deflated_sharpe_ratio()` — Bailey & Lopez de Prado (2014)
+    - Euler-Mascheroni para E[max(Z)]
+    - Lo (2002) V[SR] = (1 + 0.5*SR² - skew*SR + (kurt-3)/4*SR²) / T
+    - Skewness/kurtosis empíricos computados dos retornos de teste reais
+    - n_observations: contagem real do path mais longo (não estimativa)
+  - `ValidationResult` dataclass: mean_sharpe, std_sharpe, pct_positive, per_path_sharpe, deflated_sharpe, p_value, accepted, metadata
+  - Math helpers: `_normal_cdf`, `_inv_normal_cdf` (Abramowitz & Stegun), `_compute_sharpe`, `_skewness`, `_kurtosis`, `_std_list`
+- tests/test_cpcv_oos.py: 66 testes (math helpers, PurgedModelFactory, DSR, splits, embargo, evaluate, validate, grid_search, integração)
+- Quant-reviewer: APROVADO
+  - 3 ERRORs corrigidos: train/test separation (PurgedModelFactory), Lo(2002) +0.5*SR², cross-path contamination (deepcopy)
+  - 4 WARNINGs corrigidos: empirical skew/kurt, n_obs real, DSR threshold 0.95, kurtosis docstring
+
+**Status dos testes:** 566 testes passando (37s, módulos disponíveis)
+
+**Sessão 30 — Fixes Estruturais no Walk-Forward** (concluída em 2026-03-08)
+- src/backtest/walk_forward.py: 2 fixes estruturais
+  - **Fix `_compute_log_returns_for_hrp`**: `drop_nulls()` → truncar leading rows incompletas + `fill_null(0.0)` para nulls interiores
+    - Antes: `drop_nulls()` descartava TODA row se qualquer ticker tinha null (com 52 tickers eliminava muitos dias)
+    - Agora: descarta leading rows onde algum ticker não tem dado (período antes do IPO), mantém o restante
+    - `all_present = pl.all_horizontal(is_not_null)` para encontrar primeira data completa
+    - Evita deflação artificial de variância (bias no HRP que over-alocava tickers com histórico curto)
+  - **Fix `NaiveModelFactory.predict`**: scaling proporcional ao lookback
+    - Antes: `ret * 10` (hardcoded) saturava clamp com lookback > 5
+    - Agora: `scaling = 50.0 / max(self.lookback, 1)` → lookback=5 gera scaling=10 (backward compat), lookback=63 gera scaling=0.79
+    - Evita binarização (tudo 0.95 ou 0.05) com lookback longo
+- tests/test_walk_forward.py: 6 testes novos
+  - Scaling: backward compat (lookback=5), not saturated (lookback=63), edge case (lookback=1), range check
+  - fill_null: preserva rows com dados parciais, zero nulls na saída
+- Quant-reviewer: APROVADO COM RESSALVAS
+  - Fix extra aplicado: substituído `fill_null(0.0)` puro por truncar leading + fill interior
+  - Aceito (INFO): scaling `50/lookback` é ad-hoc mas adequado para modelo de validação
+
+**Status dos testes:** 572 testes passando (36s, módulos disponíveis)
+
+**Sessão 31 — HRP Ward Linkage + Ledoit-Wolf Shrinkage** (concluída em 2026-03-08)
+- src/portfolio/hrp.py: Ledoit-Wolf shrinkage adicionado
+  - `HRPConfig.shrinkage: bool = False` — nova opção (backward compatible)
+  - `_compute_covariance()`: quando `shrinkage=True`, usa `sklearn.covariance.LedoitWolf` em vez de `np.cov`
+  - Import lazy do sklearn (dentro do bloco `if shrinkage`)
+  - Correlação derivada da covariância shrunk via `cov / outer(std, std)` (matematicamente correto)
+  - Interação shrinkage+spearman: cov shrunk + corr Spearman (rank-based, não se beneficia de regularização)
+  - Log do coeficiente de shrinkage (`lw.shrinkage_`) para diagnóstico
+  - Ward linkage já era suportado — apenas testado para validar clusters mais balanceados
+- pyproject.toml: `scikit-learn>=1.3` adicionado às dependências
+- tests/test_hrp.py: 13 testes novos (80 total, era 67)
+  - TestLedoitWolfShrinkage (11): PSD validity, corr diagonal, bounded, sum=1, backward compat, convergence, confidences, deterministic, spearman, few_obs_many_assets
+  - TestWardLinkage (2): ward mais balanceado que single (dispersão de pesos), linkage matrix válida
+- Quant-reviewer: APROVADO COM RESSALVAS
+  - Zero look-ahead bias (shrinkage é estimador, não parâmetro)
+  - Zero overfitting risk (coeficiente analítico, não otimizado)
+  - Aceito (INFO): warning de near-zero variance inspeciona após shrinkage (seguro, perde utilidade diagnóstica)
+
+**Status dos testes:** 585 testes passando (34s, módulos disponíveis)
+
 ## O que NUNCA fazer
 - Nunca hardcode API keys (usar .env + python-dotenv)
 - Nunca usar Pandas (usar Polars — é a escolha do projeto)

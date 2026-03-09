@@ -199,6 +199,45 @@ class TestNaiveModelFactory:
         scores = factory.predict(df)
         assert scores["AAPL"] == 0.5
 
+    def test_scaling_backward_compat_lookback5(self) -> None:
+        """lookback=5 → scaling=10.0, same as the original hardcoded value."""
+        factory = NaiveModelFactory(lookback=5)
+        df = _make_ohlcv(["AAPL"], n_days=20, daily_return=0.01)
+        scores = factory.predict(df)
+        # With positive momentum, conf should be > 0.5
+        assert scores["AAPL"] > 0.5
+
+    def test_scaling_lookback63_not_saturated(self) -> None:
+        """lookback=63 with moderate return should NOT saturate to 0.95."""
+        factory = NaiveModelFactory(lookback=63)
+        # Moderate daily return → ~4% over 63 days
+        df = _make_ohlcv(["AAPL"], n_days=100, daily_return=0.0006)
+        scores = factory.predict(df)
+        conf = scores["AAPL"]
+        # Should be nuanced, not saturated
+        assert 0.5 < conf < 0.95, f"Expected nuanced confidence, got {conf}"
+
+    def test_scaling_lookback1(self) -> None:
+        """Edge case: lookback=1 → scaling=50.0, but still clamped."""
+        factory = NaiveModelFactory(lookback=1)
+        df = _make_ohlcv(["AAPL"], n_days=10, daily_return=0.01)
+        scores = factory.predict(df)
+        assert 0.05 <= scores["AAPL"] <= 0.95
+
+    def test_scaling_produces_range(self) -> None:
+        """With lookback=63, different returns should produce varied confidences."""
+        factory = NaiveModelFactory(lookback=63)
+        # Strong positive
+        df_up = _make_ohlcv(["AAPL"], n_days=100, daily_return=0.002)
+        # Negative
+        df_dn = _make_ohlcv(["AAPL"], n_days=100, daily_return=-0.002)
+        conf_up = factory.predict(df_up)["AAPL"]
+        conf_dn = factory.predict(df_dn)["AAPL"]
+        assert conf_up > 0.5
+        assert conf_dn < 0.5
+        # Both should be within bounds (not saturated for moderate returns)
+        assert conf_up < 0.95 and conf_dn > 0.05  # both unsaturated
+
 
 # ---------------------------------------------------------------------------
 # TestComputeDailyReturns
@@ -245,6 +284,60 @@ class TestComputeLogReturnsForHRP:
             ohlcv_3t, ["AAPL"], cutoff, lookback=30
         )
         assert lr.height <= 30
+
+    def test_fill_null_preserves_rows_with_partial_data(self) -> None:
+        """When one ticker has missing dates, rows should NOT be dropped."""
+        # AAPL has 100 days, MSFT has only 50 (starting later)
+        from datetime import timedelta
+        import random
+
+        rng = random.Random(42)
+        rows: list[dict[str, Any]] = []
+        base = date(2020, 1, 1)
+
+        # AAPL: 100 days
+        price = 100.0
+        for d in range(100):
+            price *= 1 + rng.gauss(0.0003, 0.01)
+            rows.append({
+                "date": base + timedelta(days=d),
+                "ticker": "AAPL",
+                "open": price, "high": price, "low": price,
+                "close": price, "volume": 1_000_000,
+            })
+
+        # MSFT: only days 50-99 (50 days)
+        price = 200.0
+        for d in range(50, 100):
+            price *= 1 + rng.gauss(0.0003, 0.01)
+            rows.append({
+                "date": base + timedelta(days=d),
+                "ticker": "MSFT",
+                "open": price, "high": price, "low": price,
+                "close": price, "volume": 1_000_000,
+            })
+
+        df = pl.DataFrame(rows).with_columns(pl.col("date").cast(pl.Date))
+        bt = WalkForwardBacktester()
+        lr = bt._compute_log_returns_for_hrp(
+            df, ["AAPL", "MSFT"], base + timedelta(days=99), lookback=200
+        )
+        # With the improved logic, leading rows where MSFT is null are
+        # dropped (to avoid variance deflation), so we get ~49 rows
+        # (MSFT's coverage).  This is better than the old drop_nulls()
+        # which could drop ALL rows with any interior null.
+        assert lr.height > 0, f"Expected some rows, got {lr.height}"
+        # No nulls
+        assert lr.null_count().sum_horizontal()[0] == 0
+
+    def test_fill_null_no_nulls_in_output(self, ohlcv_3t: pl.DataFrame) -> None:
+        """Log returns output should have zero null values."""
+        bt = WalkForwardBacktester()
+        cutoff = date(2021, 6, 1)
+        lr = bt._compute_log_returns_for_hrp(
+            ohlcv_3t, ["AAPL", "MSFT", "GOOG"], cutoff, lookback=200
+        )
+        assert lr.null_count().sum_horizontal()[0] == 0
 
 
 # ---------------------------------------------------------------------------

@@ -123,8 +123,10 @@ class NaiveModelFactory:
                 scores[ticker] = 0.5
                 continue
             ret = (closes[-1] - closes[0]) / closes[0]
-            # Clamp to [0.05, 0.95]
-            conf = max(0.05, min(0.95, 0.5 + ret * 10))
+            # Scale inversely with lookback so that longer windows
+            # don't saturate the clamp.  lookback=5 → scaling=10 (backward compat).
+            scaling = 50.0 / max(self.lookback, 1)
+            conf = max(0.05, min(0.95, 0.5 + ret * scaling))
             scores[ticker] = conf
         return scores
 
@@ -300,11 +302,20 @@ class WalkForwardBacktester:
         wide = (
             log_ret.pivot(on="ticker", index="date", values="log_return")
             .sort("date")
-            .drop_nulls()
         )
 
-        # Remove date column, keep only ticker columns
+        # Drop leading rows where any ticker has null (incomplete history),
+        # then fill remaining interior nulls with 0.0.  This avoids both
+        # the old drop_nulls() (too aggressive — drops rows if ANY null)
+        # and pure fill_null(0.0) (deflates variance for short-history tickers).
         ticker_cols = [c for c in wide.columns if c != "date"]
+        all_present = pl.all_horizontal(
+            pl.col(c).is_not_null() for c in ticker_cols
+        )
+        first_complete_idx = wide.with_row_index("_idx").filter(all_present)["_idx"]
+        if first_complete_idx.len() > 0:
+            wide = wide.slice(int(first_complete_idx[0]))
+        wide = wide.fill_null(0.0)
 
         if wide.height > lookback:
             wide = wide.tail(lookback)
