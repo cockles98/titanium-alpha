@@ -37,6 +37,7 @@ Usage::
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Protocol, runtime_checkable
@@ -137,6 +138,37 @@ class NaiveModelFactory:
 
 
 @dataclass(frozen=True)
+class KillswitchConfig:
+    """Configuration for the drawdown killswitch.
+
+    When portfolio drawdown breaches ``max_drawdown_pct``, all holdings
+    are liquidated (moved to cash).  Re-entry occurs after the
+    **benchmark** drawdown recovers above ``recovery_threshold_pct``
+    for ``ramp_up_days`` consecutive trading days.
+
+    Using the benchmark (not the portfolio) for recovery avoids the
+    logical bug where the portfolio never exits cash because its own
+    drawdown is frozen while in cash.
+
+    Upon re-entry, ``peak_value`` is reset to the current portfolio
+    value to avoid immediate re-triggering from stale peaks.
+
+    Attributes:
+        max_drawdown_pct: Drawdown threshold to trigger cash exit
+            (negative, e.g. ``-0.15`` for -15%).
+        recovery_threshold_pct: Benchmark drawdown level at which
+            recovery countdown begins (negative, e.g. ``-0.05``).
+        ramp_up_days: Number of consecutive days the benchmark must
+            stay above ``recovery_threshold_pct`` before re-entry.
+            Must be >= 1.
+    """
+
+    max_drawdown_pct: float = -0.15
+    recovery_threshold_pct: float = -0.05
+    ramp_up_days: int = 21
+
+
+@dataclass(frozen=True)
 class WalkForwardConfig:
     """Immutable configuration for the walk-forward backtester.
 
@@ -151,6 +183,18 @@ class WalkForwardConfig:
             change is below this threshold.
         trading_days_per_year: For annualisation of metrics.
         rf: Annual risk-free rate.
+        target_vol: Target annualised portfolio volatility.  When
+            ``None`` (default), no volatility targeting is applied.
+            Example: ``0.10`` for 10% annual vol.
+        vol_lookback: Rolling window (trading days) for realised
+            volatility estimation.  Default 63 (~one quarter).
+        max_leverage: Upper bound on the vol-targeting leverage
+            factor.  ``1.0`` means no leverage (long-only).
+        min_leverage: Lower bound on exposure.  ``0.5`` means the
+            portfolio never goes below 50% invested.  Set to ``0.0``
+            for a full volatility killswitch.
+        killswitch: Drawdown killswitch configuration.  When ``None``
+            (default), no killswitch is active.
     """
 
     retrain_every: int = 126
@@ -161,6 +205,11 @@ class WalkForwardConfig:
     min_rebalance_delta: float = 0.0
     trading_days_per_year: int = 252
     rf: float = 0.05
+    target_vol: float | None = None
+    vol_lookback: int = 63
+    max_leverage: float = 1.0
+    min_leverage: float = 0.5
+    killswitch: KillswitchConfig | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +276,23 @@ class WalkForwardBacktester:
 
     def __init__(self, config: WalkForwardConfig | None = None) -> None:
         self.config = config or WalkForwardConfig()
+        cfg = self.config
+        if cfg.target_vol is not None:
+            if cfg.vol_lookback < 2:
+                raise ValueError(
+                    f"vol_lookback must be >= 2, got {cfg.vol_lookback}"
+                )
+            if cfg.max_leverage < cfg.min_leverage:
+                raise ValueError(
+                    f"max_leverage ({cfg.max_leverage}) must be >= "
+                    f"min_leverage ({cfg.min_leverage})"
+                )
+        if cfg.killswitch is not None:
+            if cfg.killswitch.ramp_up_days < 1:
+                raise ValueError(
+                    f"ramp_up_days must be >= 1, "
+                    f"got {cfg.killswitch.ramp_up_days}"
+                )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -450,14 +516,20 @@ class WalkForwardBacktester:
         n = len(available_tickers)
         hrp_config = HRPConfig(max_weight=min(0.25, 2.0 / n))
 
+        # Killswitch state
+        in_cash = False
+        days_recovering = 0
+        peak_value = cfg.initial_capital
+        bench_peak = cfg.initial_capital
+
         # ---- Main loop
         for i, current_date in enumerate(active_dates):
             # Row index in returns_wide
             row_idx = warmup_end + i
 
-            # -- Retrain check
+            # -- Retrain check (skip when in cash — nothing to trade)
             retrained = False
-            if days_since_retrain >= cfg.retrain_every:
+            if not in_cash and days_since_retrain >= cfg.retrain_every:
                 train_data = ohlcv.filter(
                     (pl.col("ticker").is_in(available_tickers))
                     & (pl.col("date") <= current_date)
@@ -492,9 +564,9 @@ class WalkForwardBacktester:
 
             days_since_retrain += 1
 
-            # -- Rebalance check
+            # -- Rebalance check (skip when in cash)
             rebalanced = False
-            if days_since_rebalance >= cfg.rebalance_every:
+            if not in_cash and days_since_rebalance >= cfg.rebalance_every:
                 # Predict
                 predict_data = ohlcv.filter(
                     (pl.col("ticker").is_in(available_tickers))
@@ -577,24 +649,123 @@ class WalkForwardBacktester:
             if not rebalanced:
                 days_since_rebalance += 1
 
+            # -- Volatility targeting (scale exposure before returns)
+            #
+            # When target_vol is set, we compute the realised vol over
+            # the trailing vol_lookback days and adjust exposure so that
+            # the portfolio's expected vol matches target_vol.  Cash
+            # (uninvested fraction) earns nothing.
+            # Skip when in_cash (killswitch active — all holdings are 0).
+            cash = 0.0
+            if (
+                not in_cash
+                and cfg.target_vol is not None
+                and len(returns_port) >= cfg.vol_lookback
+            ):
+                recent_rets = returns_port[-cfg.vol_lookback:]
+                n_rets = len(recent_rets)
+                mean_ret = sum(recent_rets) / n_rets
+                var = sum((r - mean_ret) ** 2 for r in recent_rets) / (
+                    n_rets - 1
+                )
+                realized_vol = math.sqrt(var) * math.sqrt(
+                    cfg.trading_days_per_year
+                )
+
+                if realized_vol > 0:
+                    raw_leverage = cfg.target_vol / realized_vol
+                    leverage = max(
+                        cfg.min_leverage,
+                        min(cfg.max_leverage, raw_leverage),
+                    )
+
+                    # Scale all holdings proportionally; excess → cash
+                    invested = sum(holdings.values())
+                    if invested > 0:
+                        scale = leverage * portfolio_value / invested
+                        for t in available_tickers:
+                            holdings[t] *= scale
+                        cash = portfolio_value - sum(holdings.values())
+
             # -- Compute daily returns (drift-adjusted holdings)
             row = returns_wide.row(row_idx, named=True)
-
-            # Update per-asset holdings with today's return
-            old_portfolio_value = portfolio_value
-            for t in available_tickers:
-                asset_ret = row.get(t, 0.0)
-                holdings[t] *= (1.0 + asset_ret)
-
-            portfolio_value = sum(holdings.values())
-            port_ret = (
-                (portfolio_value / old_portfolio_value - 1.0)
-                if old_portfolio_value > 0
-                else 0.0
-            )
-
             bench_ret = row.get(benchmark_ticker, 0.0)
             benchmark_value *= (1.0 + bench_ret)
+
+            if in_cash:
+                # In cash: portfolio value is constant (cash earns nothing)
+                port_ret = 0.0
+            else:
+                # Update per-asset holdings with today's return
+                # (cash portion earns nothing — simplification)
+                old_portfolio_value = portfolio_value
+                for t in available_tickers:
+                    asset_ret = row.get(t, 0.0)
+                    holdings[t] *= (1.0 + asset_ret)
+
+                portfolio_value = sum(holdings.values()) + cash
+                port_ret = (
+                    (portfolio_value / old_portfolio_value - 1.0)
+                    if old_portfolio_value > 0
+                    else 0.0
+                )
+
+            # -- Drawdown killswitch (after returns are applied)
+            if cfg.killswitch is not None:
+                peak_value = max(peak_value, portfolio_value)
+                bench_peak = max(bench_peak, benchmark_value)
+                dd = (portfolio_value / peak_value) - 1.0 if peak_value > 0 else 0.0
+
+                if dd <= cfg.killswitch.max_drawdown_pct and not in_cash:
+                    # Exit: liquidate all holdings
+                    effective_weights = {
+                        t: holdings[t] / portfolio_value
+                        for t in available_tickers
+                    } if portfolio_value > 0 else {
+                        t: 0.0 for t in available_tickers
+                    }
+                    zero_weights = {t: 0.0 for t in available_tickers}
+                    _, exit_cost = self._apply_costs(
+                        effective_weights, zero_weights,
+                        portfolio_value, cfg.costs,
+                    )
+                    portfolio_value -= exit_cost
+                    holdings = {t: 0.0 for t in available_tickers}
+                    in_cash = True
+                    days_recovering = 0
+                    logger.warning(
+                        "KILLSWITCH ON {}: DD={:.2%}, cost=${:.2f}",
+                        current_date, dd, exit_cost,
+                    )
+
+                elif in_cash:
+                    # Recovery: use benchmark drawdown as proxy
+                    bench_dd = (
+                        (benchmark_value / bench_peak) - 1.0
+                        if bench_peak > 0
+                        else 0.0
+                    )
+                    if bench_dd >= cfg.killswitch.recovery_threshold_pct:
+                        days_recovering += 1
+                        ramp = min(
+                            1.0,
+                            days_recovering / cfg.killswitch.ramp_up_days,
+                        )
+                        if ramp >= 1.0:
+                            in_cash = False
+                            # Reset peak to avoid immediate re-trigger
+                            # from stale pre-crash high-water mark
+                            peak_value = portfolio_value
+                            # Force rebalance on next iteration
+                            days_since_rebalance = cfg.rebalance_every
+                            logger.info(
+                                "KILLSWITCH OFF {}: ramp complete, "
+                                "resuming trading",
+                                current_date,
+                            )
+                    else:
+                        # Benchmark still in drawdown — reset ramp
+                        days_recovering = 0
 
             equity_dates.append(current_date)
             equity_portfolio.append(portfolio_value)

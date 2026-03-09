@@ -648,6 +648,51 @@ docs: apenas documentação
 
 **Status dos testes:** 585 testes passando (34s, módulos disponíveis)
 
+**Sessão 32 — Volatility Targeting** (concluída em 2026-03-09)
+- src/backtest/walk_forward.py: vol targeting overlay no loop principal
+  - `WalkForwardConfig` novos campos: `target_vol` (float|None=None), `vol_lookback` (int=63), `max_leverage` (float=1.0), `min_leverage` (float=0.5)
+  - `target_vol=None` (default): nenhum vol targeting aplicado (backward compat)
+  - Lógica: `leverage = target_vol / realized_vol`, clamped a `[min_leverage, max_leverage]`
+  - Realized vol: `std(returns[-vol_lookback:]) * sqrt(252)`, ddof=1
+  - Cash handling: `cash = portfolio_value - sum(scaled_holdings)`, cash earns 0 (simplificação documentada)
+  - Scale: `holdings[t] *= leverage * portfolio_value / invested` (proporcional)
+  - Aplicado APÓS rebalance, ANTES de retornos diários (zero look-ahead)
+  - Subsume drawdown killswitch: `target_vol=0.10, min_leverage=0.0` = killswitch conservador
+  - Validação: `vol_lookback >= 2`, `max_leverage >= min_leverage` (quando target_vol definido)
+- tests/test_walk_forward.py: 15 testes novos (59 total, era 44)
+  - TestVolatilityTargeting (15): backward compat, config defaults/custom, exposure reduction, max/min leverage, killswitch, warmup, vol reduction, holdings non-negative, matching vol, vol_lookback=2 edge, vol_lookback=1 raises, max<min raises, realized_vol=0
+- Quant-reviewer: APROVADO COM RESSALVAS
+  - Zero look-ahead bias (usa returns_port passados, antes de append do dia corrente)
+  - Fix aplicado: validação vol_lookback>=2 e max_leverage>=min_leverage
+  - Fix aplicado: testes para edge cases (vol_lookback=2, realized_vol=0)
+  - Aceito (WARNING): cash earns nothing (~rf*cash_frac understated)
+  - Aceito (INFO): custos aplicados sobre turnover full antes de vol scaling
+
+**Status dos testes:** 601 testes passando (42s, módulos disponíveis)
+
+**Sessão 33 — Drawdown Killswitch** (concluída em 2026-03-09)
+- src/backtest/walk_forward.py: killswitch overlay no loop principal
+  - `KillswitchConfig` frozen dataclass: `max_drawdown_pct=-0.15`, `recovery_threshold_pct=-0.05`, `ramp_up_days=21`
+  - `WalkForwardConfig.killswitch: KillswitchConfig | None = None` (backward compat)
+  - Trigger: `dd = portfolio_value / peak_value - 1 <= max_drawdown_pct` → liquidate tudo, go to cash
+  - Em cash: `port_ret=0`, skip rebalance/retrain/vol targeting, holdings all 0
+  - Recovery: usa **benchmark** drawdown (não portfolio) como proxy — evita bug lógico de DD constante em cash
+  - `days_recovering` conta dias consecutivos com `bench_dd >= recovery_threshold_pct`
+  - Re-entry: quando `days_recovering >= ramp_up_days`, sai de cash, força rebalance
+  - `peak_value = portfolio_value` no re-entry — evita re-trigger imediato do pico pré-crash
+  - Exit costs: aplicados via `_apply_costs()` sobre turnover de liquidação
+  - Validação: `ramp_up_days >= 1` (evita ZeroDivisionError)
+- tests/test_walk_forward.py: 15 testes novos (74 total, era 59)
+  - TestKillswitchConfig (3): defaults, custom, frozen
+  - TestDrawdownKillswitch (12): backward compat, trigger, cash stability, exit costs, benchmark recovery, ramp, vol targeting interaction, config fields, portfolio positive, ramp_up_days=0 raises, no re-trigger
+- Quant-reviewer: APROVADO (após 2 rounds)
+  - Fix aplicado (ERROR): ramp_up_days >= 1 validation
+  - Fix aplicado (ERROR): docstring corrigida — ramp é wait period, não exposição gradual
+  - Fix aplicado (WARNING): peak_value resetado no re-entry (evita oscilação)
+  - Aceito (cosmetic): variável `ramp` poderia ser renomeada para `recovery_progress`
+
+**Status dos testes:** 616 testes passando (36s, módulos disponíveis)
+
 ## O que NUNCA fazer
 - Nunca hardcode API keys (usar .env + python-dotenv)
 - Nunca usar Pandas (usar Polars — é a escolha do projeto)
