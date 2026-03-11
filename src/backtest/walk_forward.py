@@ -195,6 +195,9 @@ class WalkForwardConfig:
             for a full volatility killswitch.
         killswitch: Drawdown killswitch configuration.  When ``None``
             (default), no killswitch is active.
+        hrp_config: HRP optimizer configuration.  When ``None``
+            (default), a dynamic config is created with
+            ``max_weight=min(0.25, 2/n)``.
     """
 
     retrain_every: int = 126
@@ -210,6 +213,7 @@ class WalkForwardConfig:
     max_leverage: float = 1.0
     min_leverage: float = 0.5
     killswitch: KillswitchConfig | None = None
+    hrp_config: HRPConfig | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -512,9 +516,12 @@ class WalkForwardBacktester:
         days_since_rebalance = cfg.rebalance_every  # force initial rebalance
         total_retrains = 0
 
-        # HRP config with dynamic max_weight
+        # HRP config: use provided or dynamic max_weight
         n = len(available_tickers)
-        hrp_config = HRPConfig(max_weight=min(0.25, 2.0 / n))
+        if cfg.hrp_config is not None:
+            hrp_config = cfg.hrp_config
+        else:
+            hrp_config = HRPConfig(max_weight=min(0.25, 2.0 / n))
 
         # Killswitch state
         in_cash = False

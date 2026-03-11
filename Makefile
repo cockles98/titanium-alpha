@@ -1,4 +1,4 @@
-.PHONY: setup ingest predict decide benchmark benchmark-fast test lint run clean
+.PHONY: setup ingest predict decide benchmark benchmark-fast validate validate-fast test lint run clean
 
 # ── Setup ──────────────────────────────────────────────────
 setup:
@@ -23,6 +23,13 @@ benchmark:
 
 benchmark-fast:
 	poetry run python -m src.backtest.run_benchmark --naive
+
+# ── Validation ──────────────────────────────────────────────
+validate:
+	poetry run python -m src.backtest.run_validation
+
+validate-fast:
+	poetry run python -m src.backtest.run_validation --subset tier1
 
 # ── Testing ────────────────────────────────────────────────
 test:

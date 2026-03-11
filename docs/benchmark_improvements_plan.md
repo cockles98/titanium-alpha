@@ -134,6 +134,7 @@ class ValidationResult:
 ```
 
 5. **Testes (~25-30):**
+Chame o agente test-writer para realizar:
    - Splits gerados corretamente (6 splits, 15 paths)
    - Embargo aplicado entre splits adjacentes
    - Walk-forward roda em cada fold (mock do backtester)
@@ -542,7 +543,7 @@ validate-fast:
 
 4. **Atualizar documentacao:**
    - `docs/benchmark_improvement.md` → marcar itens aceitos/rejeitados com resultados
-   - CLAUDE.md → adicionar sessoes 29-35 ao historico
+   - CLAUDE.md → adicionar sessoes 29-35 ao historico (caso ainda não tenham sido adicionadas)
    - README.md → atualizar metricas se melhoraram significativamente
 
 5. **Gerar relatorio final:**

@@ -693,6 +693,31 @@ docs: apenas documentação
 
 **Status dos testes:** 616 testes passando (36s, módulos disponíveis)
 
+**Sessão 34 — Validação CPCV-OOS de Todas as Melhorias** (concluída em 2026-03-09)
+- src/backtest/run_validation.py: script de validação CPCV-OOS (NOVO)
+  - `build_tier1_configs(n_tickers)` — 7 configs: baseline + 3 vol targeting + 3 HRP (ward, shrinkage, ward+shrinkage)
+  - `build_tier2_configs(n_tickers)` — 10 configs: 2 rebalance freq + 3 confidence tilt + 2 lookback + 3 killswitch
+  - `build_momentum_factories()` — 4 variantes NaiveModelFactory (5d, 21d, 63d, 126d)
+  - `build_all_configs(subset, n_tickers)` — combina tier1 + tier2 (total 17 configs)
+  - `run_improvement_validation()` — pipeline 6 steps: build grid → build factories → create validator → config grid search → momentum grid search → save outputs
+  - Output: validation_results.json, validation_summary.md, validation_per_path.parquet
+  - HRP configs com `max_weight=min(0.25, 2/n)` explícito para isolar variáveis
+  - DSR `n_trials` consistente: total = len(configs) + len(factories) para AMBOS grid_search e validate
+  - CLI: `python -m src.backtest.run_validation [--subset tier1|tier2]`
+- src/backtest/cpcv_oos.py: `grid_search()` aceita `n_trials: int | None = None`
+  - Quando None, usa `len(configs)` (backward compat)
+  - Quando fornecido, usa o valor externo (para DSR consistente com factories adicionais)
+- src/backtest/walk_forward.py: `WalkForwardConfig.hrp_config: HRPConfig | None = None`
+  - Quando None, backtester cria HRP dinâmico com `max_weight=min(0.25, 2/n)`
+  - Quando fornecido, usa o config explícito (para grid search com variações de HRP)
+- Makefile: targets `validate` e `validate-fast` adicionados
+- tests/test_run_validation.py: 43 testes (config builders, output savers, HRP integration, pipeline mocked)
+- Quant-reviewer: APROVADO (após 2 fixes)
+  - Fix aplicado (ERROR): DSR n_trials consistente — grid_search recebe n_total_trials (não apenas len(configs))
+  - Fix aplicado (WARNING): HRP configs com max_weight explícito para isolar variáveis testadas
+
+**Status dos testes:** 659 testes passando (módulos disponíveis)
+
 ## O que NUNCA fazer
 - Nunca hardcode API keys (usar .env + python-dotenv)
 - Nunca usar Pandas (usar Polars — é a escolha do projeto)

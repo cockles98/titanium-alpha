@@ -662,23 +662,29 @@ class CPCVParameterValidator:
         configs: dict[str, WalkForwardConfig],
         model_factory: ModelFactory | None = None,
         baseline_sharpe: float | None = None,
+        n_trials: int | None = None,
     ) -> list[tuple[str, ValidationResult]]:
         """Validate multiple configurations and return ranked results.
 
         Each configuration is validated via CPCV-OOS.  The Deflated
         Sharpe Ratio accounts for the total number of configurations
-        tested (``n_trials = len(configs)``).
+        tested.
 
         Args:
             configs: Named configurations to evaluate.
             model_factory: Model factory (shared across configs).
             baseline_sharpe: Reference Sharpe for DSR.
+            n_trials: Total number of trials for DSR correction.
+                When ``None``, defaults to ``len(configs)``.  Pass
+                a higher value when additional model factories are
+                tested separately outside of this grid search.
 
         Returns:
             List of ``(name, ValidationResult)`` sorted by
             ``deflated_sharpe`` descending.
         """
-        n_trials = len(configs)
+        if n_trials is None:
+            n_trials = len(configs)
         results: list[tuple[str, ValidationResult]] = []
 
         for i, (name, config) in enumerate(configs.items()):
