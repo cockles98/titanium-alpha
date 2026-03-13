@@ -327,7 +327,7 @@ class TestPredictProba:
 
     @patch("src.models.patchtst_model.PatchTST")
     @patch("src.models.patchtst_model.NeuralForecast")
-    def test_all_quantiles_above_gives_prob_1(
+    def test_all_quantiles_above_gives_high_prob(
         self,
         mock_nf_class: MagicMock,
         mock_patchtst_class: MagicMock,
@@ -347,11 +347,12 @@ class TestPredictProba:
         )
         f = self._make_fitted_forecaster(mock_nf_class, sample_features_df, forecast)
         result = f.predict_proba(sample_features_df)
-        assert result["prob_up"][0] == 1.0
+        # close below all quantiles → 1 - q_min/2 = 1 - 0.1/2 = 0.95
+        assert result["prob_up"][0] == pytest.approx(0.95)
 
     @patch("src.models.patchtst_model.PatchTST")
     @patch("src.models.patchtst_model.NeuralForecast")
-    def test_all_quantiles_below_gives_prob_0(
+    def test_all_quantiles_below_gives_low_prob(
         self,
         mock_nf_class: MagicMock,
         mock_patchtst_class: MagicMock,
@@ -371,7 +372,8 @@ class TestPredictProba:
         )
         f = self._make_fitted_forecaster(mock_nf_class, sample_features_df, forecast)
         result = f.predict_proba(sample_features_df)
-        assert result["prob_up"][0] == 0.0
+        # close above all quantiles → (1 - q_max)/2 = (1 - 0.9)/2 = 0.05
+        assert result["prob_up"][0] == pytest.approx(0.05)
 
     @patch("src.models.patchtst_model.PatchTST")
     @patch("src.models.patchtst_model.NeuralForecast")
@@ -423,8 +425,13 @@ class TestComputeProbUp:
             last_closes={"SPY": 100.0},
             quantiles=[0.1, 0.25, 0.5, 0.75, 0.9],
         )
-        # q0.5, q0.75, q0.9 above 100 → 3/5 = 0.6
-        assert result["prob_up"][0] == pytest.approx(0.6)
+        # CDF interpolation: close=100 between q0.25=95 and q0.5=105
+        # frac = (100-95)/(105-95) = 0.5
+        # cdf = 0.25 + 0.5*(0.5-0.25) = 0.375
+        # prob_up = 1 - 0.375 = 0.625
+        assert result["prob_up"][0] == pytest.approx(0.625)
+        assert "last_close" in result.columns
+        assert result["last_close"][0] == pytest.approx(100.0)
 
     def test_multiple_tickers(self) -> None:
         forecast = pl.DataFrame(
@@ -442,8 +449,88 @@ class TestComputeProbUp:
         assert result.height == 2
         spy_row = result.filter(pl.col("ticker") == "SPY")
         nvda_row = result.filter(pl.col("ticker") == "NVDA")
-        assert spy_row["prob_up"][0] == 1.0  # 110 > 100
-        assert nvda_row["prob_up"][0] == 0.0  # 200 < 250
+        # Single quantile: SPY close=100 < q0.5=110 → below all → 1 - 0.5/2 = 0.75
+        assert spy_row["prob_up"][0] == pytest.approx(0.75)
+        # NVDA close=250 > q0.5=200 → above all → (1-0.5)/2 = 0.25
+        assert nvda_row["prob_up"][0] == pytest.approx(0.25)
+        assert "last_close" in result.columns
+
+    def test_new_naming_convention(self) -> None:
+        """NeuralForecast new column names: lo-X, median, hi-X."""
+        forecast = pl.DataFrame(
+            {
+                "unique_id": ["SPY"] * 5,
+                "ds": list(range(5)),
+                "PatchTST-lo-80.0": [90.0] * 5,   # q0.10
+                "PatchTST-lo-50.0": [95.0] * 5,   # q0.25
+                "PatchTST-median": [105.0] * 5,    # q0.50
+                "PatchTST-hi-50.0": [110.0] * 5,   # q0.75
+                "PatchTST-hi-80.0": [115.0] * 5,   # q0.90
+            }
+        )
+        result = TitaniumForecaster._compute_prob_up(
+            forecast,
+            last_closes={"SPY": 100.0},
+            quantiles=[0.1, 0.25, 0.5, 0.75, 0.9],
+        )
+        # Same values as test_mixed_quantiles (old naming) → must give same prob_up
+        assert result["prob_up"][0] == pytest.approx(0.625)
+        assert result["last_close"][0] == pytest.approx(100.0)
+
+    def test_new_naming_parity_with_old(self) -> None:
+        """Old and new naming conventions must produce identical prob_up."""
+        values = [88.0, 94.0, 102.0, 108.0, 114.0]
+        close = 100.0
+        quantiles = [0.1, 0.25, 0.5, 0.75, 0.9]
+
+        old_forecast = pl.DataFrame(
+            {
+                "unique_id": ["SPY"] * 5,
+                "ds": list(range(5)),
+                "PatchTST-q0.1": [values[0]] * 5,
+                "PatchTST-q0.25": [values[1]] * 5,
+                "PatchTST-q0.5": [values[2]] * 5,
+                "PatchTST-q0.75": [values[3]] * 5,
+                "PatchTST-q0.9": [values[4]] * 5,
+            }
+        )
+        new_forecast = pl.DataFrame(
+            {
+                "unique_id": ["SPY"] * 5,
+                "ds": list(range(5)),
+                "PatchTST-lo-80.0": [values[0]] * 5,
+                "PatchTST-lo-50.0": [values[1]] * 5,
+                "PatchTST-median": [values[2]] * 5,
+                "PatchTST-hi-50.0": [values[3]] * 5,
+                "PatchTST-hi-80.0": [values[4]] * 5,
+            }
+        )
+
+        old_result = TitaniumForecaster._compute_prob_up(
+            old_forecast, last_closes={"SPY": close}, quantiles=quantiles,
+        )
+        new_result = TitaniumForecaster._compute_prob_up(
+            new_forecast, last_closes={"SPY": close}, quantiles=quantiles,
+        )
+        assert old_result["prob_up"][0] == pytest.approx(new_result["prob_up"][0])
+
+    def test_new_naming_only_median(self) -> None:
+        """Only median column present."""
+        forecast = pl.DataFrame(
+            {
+                "unique_id": ["SPY"] * 5,
+                "ds": list(range(5)),
+                "PatchTST-median": [110.0] * 5,
+            }
+        )
+        result = TitaniumForecaster._compute_prob_up(
+            forecast,
+            last_closes={"SPY": 100.0},
+            quantiles=[0.5],
+        )
+        assert result.height == 1
+        # close=100 < median=110 → close below all → 1 - 0.5/2 = 0.75
+        assert result["prob_up"][0] == pytest.approx(0.75)
 
     def test_skips_ticker_without_close(self) -> None:
         forecast = pl.DataFrame(
@@ -459,6 +546,110 @@ class TestComputeProbUp:
             quantiles=[0.5],
         )
         assert result.height == 0
+
+
+# ---------------------------------------------------------------------------
+# TestInterpolateProbUp
+# ---------------------------------------------------------------------------
+
+
+class TestInterpolateProbUp:
+    """Static method _interpolate_prob_up (CDF interpolation)."""
+
+    def test_close_below_all_quantiles(self) -> None:
+        """Close below all predicted values → high prob up."""
+        prob = TitaniumForecaster._interpolate_prob_up(
+            q_levels=[0.1, 0.25, 0.5, 0.75, 0.9],
+            q_values=[100, 110, 120, 130, 140],
+            close=90.0,
+        )
+        # close <= vals[0]=100 → 1 - 0.1/2 = 0.95
+        assert prob == pytest.approx(0.95)
+
+    def test_close_above_all_quantiles(self) -> None:
+        """Close above all predicted values → low prob up."""
+        prob = TitaniumForecaster._interpolate_prob_up(
+            q_levels=[0.1, 0.25, 0.5, 0.75, 0.9],
+            q_values=[100, 110, 120, 130, 140],
+            close=150.0,
+        )
+        # close >= vals[-1]=140 → (1 - 0.9)/2 = 0.05
+        assert prob == pytest.approx(0.05)
+
+    def test_close_between_quantiles(self) -> None:
+        """Close between two quantile values → interpolated probability."""
+        prob = TitaniumForecaster._interpolate_prob_up(
+            q_levels=[0.1, 0.25, 0.5, 0.75, 0.9],
+            q_values=[90, 95, 105, 110, 115],
+            close=100.0,
+        )
+        # close=100 between q0.25=95 and q0.5=105
+        # frac = (100-95)/(105-95) = 0.5
+        # cdf = 0.25 + 0.5*(0.5-0.25) = 0.375
+        # prob_up = 1 - 0.375 = 0.625
+        assert prob == pytest.approx(0.625)
+
+    def test_close_at_exact_quantile_value(self) -> None:
+        """Close exactly at a quantile value → boundary of bracket."""
+        prob = TitaniumForecaster._interpolate_prob_up(
+            q_levels=[0.1, 0.5, 0.9],
+            q_values=[90, 100, 110],
+            close=100.0,
+        )
+        # close=100 at vals[1]=100, frac=0 in bracket [100, 110]
+        # cdf = 0.5 + 0*(0.9-0.5) = 0.5
+        # prob_up = 1 - 0.5 = 0.5
+        assert prob == pytest.approx(0.5)
+
+    def test_close_at_lowest_quantile(self) -> None:
+        """Close exactly at lowest quantile value."""
+        prob = TitaniumForecaster._interpolate_prob_up(
+            q_levels=[0.1, 0.5, 0.9],
+            q_values=[100, 110, 120],
+            close=100.0,
+        )
+        # close <= vals[0]=100 → 1 - 0.1/2 = 0.95
+        assert prob == pytest.approx(0.95)
+
+    def test_close_at_highest_quantile(self) -> None:
+        """Close exactly at highest quantile value."""
+        prob = TitaniumForecaster._interpolate_prob_up(
+            q_levels=[0.1, 0.5, 0.9],
+            q_values=[90, 100, 110],
+            close=110.0,
+        )
+        # close >= vals[-1]=110 → (1-0.9)/2 = 0.05
+        assert prob == pytest.approx(0.05)
+
+    def test_single_quantile_above(self) -> None:
+        """Single quantile, close below → high prob."""
+        prob = TitaniumForecaster._interpolate_prob_up(
+            q_levels=[0.5],
+            q_values=[110],
+            close=100.0,
+        )
+        # close <= vals[0]=110 → 1 - 0.5/2 = 0.75
+        assert prob == pytest.approx(0.75)
+
+    def test_single_quantile_below(self) -> None:
+        """Single quantile, close above → low prob."""
+        prob = TitaniumForecaster._interpolate_prob_up(
+            q_levels=[0.5],
+            q_values=[90],
+            close=100.0,
+        )
+        # close >= vals[-1]=90 → (1-0.5)/2 = 0.25
+        assert prob == pytest.approx(0.25)
+
+    def test_output_bounded_0_1(self) -> None:
+        """Result is always in [0, 1]."""
+        for close in [50, 80, 100, 120, 150]:
+            prob = TitaniumForecaster._interpolate_prob_up(
+                q_levels=[0.1, 0.25, 0.5, 0.75, 0.9],
+                q_values=[90, 95, 100, 105, 110],
+                close=float(close),
+            )
+            assert 0.0 <= prob <= 1.0
 
 
 # ---------------------------------------------------------------------------

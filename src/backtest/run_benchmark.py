@@ -34,6 +34,7 @@ from src.backtest.walk_forward import (
     WalkForwardConfig,
     WalkForwardResult,
 )
+from src.portfolio.hrp import HRPConfig
 from src.config import load_benchmark, load_ticker_config, load_tickers
 
 
@@ -139,7 +140,7 @@ def _resolve_model_factory(use_patchtst: bool) -> Any:
     """
     if not use_patchtst:
         logger.info("Using NaiveModelFactory (fast mode)")
-        return NaiveModelFactory()
+        return NaiveModelFactory(lookback=1)
 
     # Lazy import to avoid heavy deps when running in fast mode
     try:
@@ -316,17 +317,23 @@ def run_us_benchmark(
     logger.info("Step 5/7: Running walk-forward backtest")
     n_tickers = len(tickers)
     wf_config = WalkForwardConfig(
-        rebalance_every=5,        # weekly
-        retrain_every=126,        # semi-annual
-        lookback_days=504,        # ~2 years for covariance
+        rebalance_every=1,             # Velocidade: Giro diário
+        retrain_every=126,             # Pode manter semestral para o modelo
+        lookback_days=63,              # Matriz de Risco: 63 dias (curta)
         initial_capital=1_000_000.0,
         costs=TransactionCosts(
-            slippage_bps=5.0,
+            slippage_bps=5.0,          # Otimista (exige execução passiva no mercado)
             commission_bps=10.0,
         ),
-        min_rebalance_delta=0.02,
+        min_rebalance_delta=0.01,      # Filtro leve para evitar poeira
         trading_days_per_year=trading_days,
         rf=rf,
+        target_vol=0.15,               # Escala de risco: Volatilidade alvo de 15%
+        vol_lookback=21,               # Velocidade de reação ao risco: 1 mês
+        hrp_config=HRPConfig(
+            confidence_tilt_cap=1.0,   # Agressividade máxima nos melhores sinais
+            max_weight=0.15            # Concentração máxima em 15% por ativo
+        )
     )
 
     backtester = WalkForwardBacktester(config=wf_config)

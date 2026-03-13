@@ -134,6 +134,50 @@ class TitaniumForecaster:
         return model
 
     @staticmethod
+    def _interpolate_prob_up(
+        q_levels: list[float],
+        q_values: list[float],
+        close: float,
+    ) -> float:
+        """Interpolate P(price > close) from quantile forecasts.
+
+        Uses linear interpolation on the empirical CDF defined by the
+        quantile levels and their predicted values.  Returns ``1 - CDF(close)``.
+
+        With 5 quantiles [0.1, 0.25, 0.5, 0.75, 0.9] this gives continuous
+        probabilities instead of the old discrete {0.0, 0.2, ..., 1.0}.
+
+        Args:
+            q_levels: Quantile levels (e.g. [0.1, 0.25, 0.5, 0.75, 0.9]).
+            q_values: Predicted values at each quantile level.
+            close: Last known close price.
+
+        Returns:
+            Probability in [0, 1] that the price exceeds ``close``.
+        """
+        # Sort by predicted value (should already be monotone, but be safe)
+        pairs = sorted(zip(q_values, q_levels))
+        vals = [v for v, _ in pairs]
+        probs = [p for _, p in pairs]
+
+        # close below all quantiles → P(up) > highest quantile level
+        if close <= vals[0]:
+            return 1.0 - probs[0] / 2.0  # conservative: midpoint of [0, q_min]
+
+        # close above all quantiles → P(up) < 1 - highest quantile level
+        if close >= vals[-1]:
+            return (1.0 - probs[-1]) / 2.0  # midpoint of [q_max, 1]
+
+        # Linear interpolation between adjacent quantile brackets
+        for i in range(len(vals) - 1):
+            if vals[i] <= close <= vals[i + 1]:
+                frac = (close - vals[i]) / (vals[i + 1] - vals[i])
+                cdf_at_close = probs[i] + frac * (probs[i + 1] - probs[i])
+                return 1.0 - cdf_at_close
+
+        return 0.5  # fallback (should not reach here)
+
+    @staticmethod
     def _compute_prob_up(
         forecast_df: pl.DataFrame,
         last_closes: dict[str, float],
@@ -141,8 +185,10 @@ class TitaniumForecaster:
     ) -> pl.DataFrame:
         """Compute probability of price increase from quantile forecasts.
 
-        For each ticker, counts the fraction of quantile predictions at
-        horizon h (the last forecast step) that exceed the current close.
+        For each ticker, interpolates the empirical CDF at the last known
+        close price using the quantile predictions at horizon h (last
+        forecast step).  Returns ``1 - CDF(close)`` as a continuous
+        probability.
 
         Args:
             forecast_df: NeuralForecast predict output with quantile columns.
@@ -150,18 +196,38 @@ class TitaniumForecaster:
             quantiles: Quantile levels used in MQLoss.
 
         Returns:
-            DataFrame with columns: ticker, prob_up, expected_return.
+            DataFrame with columns: ticker, prob_up, expected_return,
+            last_close.
         """
         # Detect quantile column names (supports both old and new NeuralForecast naming)
         q_cols = [f"PatchTST-q{q}" for q in quantiles]
         q_cols_present = [c for c in q_cols if c in forecast_df.columns]
-        if not q_cols_present:
+
+        # Map column name → quantile level for old naming
+        col_to_level: dict[str, float] = {}
+        if q_cols_present:
+            for q, c in zip(quantiles, q_cols):
+                if c in forecast_df.columns:
+                    col_to_level[c] = q
+        else:
             # New NeuralForecast naming: PatchTST-lo-80.0, PatchTST-lo-50.0,
             # PatchTST-median, PatchTST-hi-50.0, PatchTST-hi-80.0
             q_cols_present = [
                 c for c in forecast_df.columns
                 if c.startswith("PatchTST-") and c not in ("ticker", "date")
             ]
+            # Derive quantile levels from column names
+            for c in q_cols_present:
+                if "median" in c:
+                    col_to_level[c] = 0.5
+                elif "-lo-" in c:
+                    # e.g. "PatchTST-lo-80.0" → quantile = (100 - 80) / 200 = 0.1
+                    pct = float(c.split("-lo-")[1])
+                    col_to_level[c] = (100.0 - pct) / 200.0
+                elif "-hi-" in c:
+                    # e.g. "PatchTST-hi-50.0" → quantile = (100 + 50) / 200 = 0.75
+                    pct = float(c.split("-hi-")[1])
+                    col_to_level[c] = (100.0 + pct) / 200.0
 
         # Detect median column
         median_col = next(
@@ -172,6 +238,7 @@ class TitaniumForecaster:
         tickers: list[str] = []
         prob_ups: list[float] = []
         expected_returns: list[float] = []
+        closes: list[float] = []
 
         id_col = "ticker" if "ticker" in forecast_df.columns else "unique_id"
         unique_ids = forecast_df[id_col].unique().to_list()
@@ -185,11 +252,13 @@ class TitaniumForecaster:
                 continue
 
             q_values = [last_row[col][0] for col in q_cols_present if col in last_row.columns]
-            if not q_values:
+            q_levels = [col_to_level[col] for col in q_cols_present if col in last_row.columns and col in col_to_level]
+            if not q_values or len(q_values) != len(q_levels):
                 continue
 
-            n_above = sum(1 for v in q_values if v > current_close)
-            prob_up = n_above / len(q_values)
+            prob_up = TitaniumForecaster._interpolate_prob_up(
+                q_levels, q_values, current_close
+            )
 
             if median_col and median_col in last_row.columns:
                 median_pred = last_row[median_col][0]
@@ -200,12 +269,14 @@ class TitaniumForecaster:
             tickers.append(ticker)
             prob_ups.append(prob_up)
             expected_returns.append(exp_ret)
+            closes.append(current_close)
 
         return pl.DataFrame(
             {
                 "ticker": tickers,
                 "prob_up": prob_ups,
                 "expected_return": expected_returns,
+                "last_close": closes,
             }
         )
 

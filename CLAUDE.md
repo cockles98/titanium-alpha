@@ -718,6 +718,60 @@ docs: apenas documentação
 
 **Status dos testes:** 659 testes passando (módulos disponíveis)
 
+**Sessão 35 — Aplicar Melhorias Aceitas + Benchmark Final** (concluída em 2026-03-13)
+- src/backtest/walk_forward.py: bug fix estrutural de custos
+  - **Bug**: `port_ret` era calculado usando `old_portfolio_value` (pós-custo), fazendo custos de transação "desaparecerem" da série de retornos que alimenta o Sharpe
+  - **Fix**: `portfolio_value_start_of_day = portfolio_value` capturado ANTES de qualquer rebalance/custo; `port_ret` dividido pelo valor de início do dia
+  - Código morto (bloco comentado do cálculo antigo) removido
+- src/backtest/run_benchmark.py: defaults atualizados com configs validadas por CPCV-OOS
+  - `NaiveModelFactory(lookback=1)` — alfa de curtíssimo prazo (1 dia)
+  - `WalkForwardConfig`: rebalance_every=1, lookback_days=63, target_vol=0.15, vol_lookback=21
+  - `TransactionCosts`: slippage=5bps, commission=10bps
+  - `HRPConfig`: confidence_tilt_cap=1.0, max_weight=0.15
+  - `min_rebalance_delta=0.01` (filtro de poeira)
+- src/dashboard/app.py: aba Benchmark enriquecida
+  - Expander "Strategy Configuration (CPCV-OOS validated)" com tabela dos 10 parâmetros otimizados
+  - Expander "CPCV-OOS Validation Results" que lê validation_results.json (se disponível)
+  - Key findings do stress test de liquidez (6 bullet points)
+  - `_load_validation_results()` helper para carregar resultados de validação
+  - `_VALIDATED_CONFIG` e `_STRESS_FINDINGS` como constantes do módulo
+- src/backtest/run_stress_test.py: script de stress test de liquidez (off-script)
+  - Testa 6 níveis de slippage (5-100 bps) com config God Mode
+  - Output: stress_test_results.json
+- src/backtest/run_validation.py: expandido com Tiers 3, 4 e God Mode
+  - `build_tier3_configs()` — 13 configs: rebalance 1d/2d/3d, deltas, lookbacks curtos, tilts altos, vol targets
+  - `build_tier4_configs()` — configs de Cost & Risk Optimization
+  - `build_god_combinations()` — combinações via itertools.combinations
+  - `build_momentum_factories()` — expandido para 8 variantes (1d-126d)
+- src/models/patchtst_model.py: fix da probabilidade P(up) no Microstructure
+  - **Problema**: contagem discreta (fração de quantis > close) → apenas 6 valores possíveis (0/5..5/5)
+  - Em bull market, 3/5 quantis consistentemente acima → 60% para quase todos os tickers
+  - **Fix**: `_interpolate_prob_up()` — interpolação linear na CDF empírica dos quantis
+  - close entre q0.25 e q0.5 → `cdf = 0.25 + frac*(0.5-0.25)`, prob_up = 1 - cdf
+  - close abaixo de todos os quantis → `1 - q_min/2` (conservador)
+  - close acima de todos os quantis → `(1 - q_max)/2` (conservador)
+  - `_compute_prob_up()` reescrito: suporta nomes de colunas NF antigos (PatchTST-q0.5) e novos (PatchTST-lo-80.0, PatchTST-median, PatchTST-hi-50.0)
+  - Nova coluna `last_close` no DataFrame de saída (para referência no dashboard)
+- src/dashboard/app.py: fan chart com linha de referência last_close
+  - `_chart_quantile_fan()` aceita `last_close: float | None` opcional
+  - Horizontal dotted line no close atual (gold) com annotation
+  - Resolve confusão visual entre "UP 60%" e gráfico que parecia flat/declining
+- tests/test_patchtst_model.py: 9 testes novos (40 total)
+  - TestInterpolateProbUp (9): below/above/between/exact/boundary/single/bounded
+  - TestComputeProbUp atualizado para valores CDF contínuos
+  - TestPredictProba atualizado (0.95/0.05 em vez de 1.0/0.0)
+- tests/test_dashboard.py: 1 teste novo (test_quantile_fan_chart_with_last_close)
+- Descobertas chave da otimização:
+  - Alfa é ultra-short-term: momentum 1d + rebalance diário + cov curta (63d) + tilt 1.0 = Sharpe máximo
+  - Estratégia suporta até ~30 bps com Sharpe OOS > 1.5; em 50 bps cai para 0.89; 75 bps quebra
+  - Vol targeting (15%, lookback 21d) esmaga curtose de ~26 para ~9.4
+  - max_weight=0.15 ótimo; acima não melhora performance
+  - min_rebalance_delta=0.01 não reduz turnover significativamente (sinais 1d invertem rápido)
+
+**Status dos testes:** 716 testes passando (módulos disponíveis, exceto 3 com deps opcionais)
+
+### Fase 5 — Completa (Sessões 29-35)
+
 ## O que NUNCA fazer
 - Nunca hardcode API keys (usar .env + python-dotenv)
 - Nunca usar Pandas (usar Polars — é a escolha do projeto)

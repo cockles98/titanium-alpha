@@ -19,11 +19,12 @@ Usage::
 
     # From CLI
     python -m src.backtest.run_validation               # all configs
-    python -m src.backtest.run_validation --subset tier3 # tier 3 only
+    python -m src.backtest.run_validation --subset tier4 # tier 4 only
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 import sys
 from datetime import datetime
@@ -58,7 +59,6 @@ _BASE_COSTS = TransactionCosts(slippage_bps=5.0, commission_bps=10.0)
 # Config grid builder
 # ---------------------------------------------------------------------------
 
-
 def _base_config(**overrides: Any) -> WalkForwardConfig:
     """Create a WalkForwardConfig with baseline defaults + overrides."""
     defaults: dict[str, Any] = {
@@ -76,95 +76,92 @@ def _base_config(**overrides: Any) -> WalkForwardConfig:
 
 
 def build_tier1_configs(n_tickers: int = 52) -> dict[str, WalkForwardConfig]:
-    """Build Tier 1 configurations (structural + risk preference)."""
     dynamic_max_weight = min(0.25, 2.0 / max(n_tickers, 1))
     configs: dict[str, WalkForwardConfig] = {}
-
     configs["baseline"] = _base_config()
     configs["vol_target_08"] = _base_config(target_vol=0.08)
     configs["vol_target_10"] = _base_config(target_vol=0.10)
     configs["vol_target_12"] = _base_config(target_vol=0.12)
-
-    configs["ward_linkage"] = _base_config(
-        hrp_config=HRPConfig(linkage_method="ward", max_weight=dynamic_max_weight)
-    )
-    configs["shrinkage"] = _base_config(
-        hrp_config=HRPConfig(shrinkage=True, max_weight=dynamic_max_weight)
-    )
-    configs["ward_shrinkage"] = _base_config(
-        hrp_config=HRPConfig(linkage_method="ward", shrinkage=True, max_weight=dynamic_max_weight)
-    )
-
+    configs["ward_linkage"] = _base_config(hrp_config=HRPConfig(linkage_method="ward", max_weight=dynamic_max_weight))
+    configs["shrinkage"] = _base_config(hrp_config=HRPConfig(shrinkage=True, max_weight=dynamic_max_weight))
+    configs["ward_shrinkage"] = _base_config(hrp_config=HRPConfig(linkage_method="ward", shrinkage=True, max_weight=dynamic_max_weight))
     return configs
 
 
 def build_tier2_configs(n_tickers: int = 52) -> dict[str, WalkForwardConfig]:
-    """Build Tier 2 configurations (parameter tuning)."""
     dynamic_max_weight = min(0.25, 2.0 / max(n_tickers, 1))
     configs: dict[str, WalkForwardConfig] = {}
-
     configs["rebalance_10d"] = _base_config(rebalance_every=10)
     configs["rebalance_21d"] = _base_config(rebalance_every=21)
-
-    configs["no_tilt"] = _base_config(
-        hrp_config=HRPConfig(confidence_tilt_cap=0.0, max_weight=dynamic_max_weight)
-    )
-    configs["tilt_010"] = _base_config(
-        hrp_config=HRPConfig(confidence_tilt_cap=0.10, max_weight=dynamic_max_weight)
-    )
-    configs["tilt_030"] = _base_config(
-        hrp_config=HRPConfig(confidence_tilt_cap=0.30, max_weight=dynamic_max_weight)
-    )
-
+    configs["no_tilt"] = _base_config(hrp_config=HRPConfig(confidence_tilt_cap=0.0, max_weight=dynamic_max_weight))
+    configs["tilt_010"] = _base_config(hrp_config=HRPConfig(confidence_tilt_cap=0.10, max_weight=dynamic_max_weight))
+    configs["tilt_030"] = _base_config(hrp_config=HRPConfig(confidence_tilt_cap=0.30, max_weight=dynamic_max_weight))
     configs["lookback_252"] = _base_config(lookback_days=252)
     configs["lookback_756"] = _base_config(lookback_days=756)
-
     configs["killswitch_15"] = _base_config(killswitch=KillswitchConfig(max_drawdown_pct=-0.15))
     configs["killswitch_20"] = _base_config(killswitch=KillswitchConfig(max_drawdown_pct=-0.20))
     configs["killswitch_25"] = _base_config(killswitch=KillswitchConfig(max_drawdown_pct=-0.25))
-
     return configs
 
 
 def build_tier3_configs(n_tickers: int = 52) -> dict[str, WalkForwardConfig]:
-    """Build Tier 3 configurations (ultrafast, aggressive tilts, higher vol)."""
     dynamic_max_weight = min(0.25, 2.0 / max(n_tickers, 1))
     configs: dict[str, WalkForwardConfig] = {}
-
-    # Frequências ultracurtas e filtros de microestrutura
     configs["rebalance_1d"] = _base_config(rebalance_every=1)
     configs["rebalance_2d"] = _base_config(rebalance_every=2)
     configs["rebalance_3d"] = _base_config(rebalance_every=3)
     configs["rebalance_5d_delta_03"] = _base_config(min_rebalance_delta=0.03)
     configs["rebalance_5d_delta_05"] = _base_config(min_rebalance_delta=0.05)
-
-    # Janelas de Covariância Curtas
     configs["lookback_63"] = _base_config(lookback_days=63)
     configs["lookback_126"] = _base_config(lookback_days=126)
-
-    # Tilts Agressivos
-    configs["tilt_040"] = _base_config(
-        hrp_config=HRPConfig(confidence_tilt_cap=0.40, max_weight=dynamic_max_weight)
-    )
-    configs["tilt_050"] = _base_config(
-        hrp_config=HRPConfig(confidence_tilt_cap=0.50, max_weight=dynamic_max_weight)
-    )
-    configs["tilt_075"] = _base_config(
-        hrp_config=HRPConfig(confidence_tilt_cap=0.75, max_weight=dynamic_max_weight)
-    )
-    configs["tilt_100"] = _base_config(
-        hrp_config=HRPConfig(confidence_tilt_cap=1.0, max_weight=dynamic_max_weight)
-    )
-
-    # Escala de Volatilidade
+    configs["tilt_040"] = _base_config(hrp_config=HRPConfig(confidence_tilt_cap=0.40, max_weight=dynamic_max_weight))
+    configs["tilt_050"] = _base_config(hrp_config=HRPConfig(confidence_tilt_cap=0.50, max_weight=dynamic_max_weight))
+    configs["tilt_075"] = _base_config(hrp_config=HRPConfig(confidence_tilt_cap=0.75, max_weight=dynamic_max_weight))
+    configs["tilt_100"] = _base_config(hrp_config=HRPConfig(confidence_tilt_cap=1.0, max_weight=dynamic_max_weight))
     configs["vol_target_15"] = _base_config(target_vol=0.15)
     configs["vol_target_20"] = _base_config(target_vol=0.20)
+    return configs
+
+
+def build_tier4_configs(n_tickers: int = 52) -> dict[str, WalkForwardConfig]:
+    """Build Tier 4 configurations (Cost & Risk Optimization)."""
+    configs: dict[str, WalkForwardConfig] = {}
+    
+    # Base God Mode params para vermos o impacto do delta no cenário de alto giro
+    base_kwargs = {
+        "rebalance_every": 1,
+        "lookback_days": 63,
+    }
+    
+    # 1. Filtros de Giro Finos (min_rebalance_delta)
+    dynamic_max_weight = min(0.25, 2.0 / max(n_tickers, 1))
+    for delta in [0.005, 0.010, 0.015, 0.025]:
+        configs[f"t4_delta_{int(delta*1000):03d}"] = _base_config(
+            **base_kwargs,
+            min_rebalance_delta=delta,
+            hrp_config=HRPConfig(confidence_tilt_cap=1.0, max_weight=dynamic_max_weight)
+        )
+
+    # 2. Concentração Máxima (max_weight por ativo)
+    for max_wt in [0.05, 0.10, 0.15, 0.20]:
+        configs[f"t4_maxwt_{int(max_wt*100):02d}"] = _base_config(
+            **base_kwargs,
+            min_rebalance_delta=0.01, # assume um delta razoável de 1%
+            hrp_config=HRPConfig(confidence_tilt_cap=1.0, max_weight=max_wt)
+        )
+
+    # 3. Target Volatility Rápido
+    configs["t4_vol_lookback_21"] = _base_config(
+        **base_kwargs,
+        target_vol=0.15,
+        vol_lookback=21,
+        hrp_config=HRPConfig(confidence_tilt_cap=1.0, max_weight=dynamic_max_weight)
+    )
 
     return configs
 
 
 def build_momentum_factories() -> dict[str, NaiveModelFactory]:
-    """Build NaiveModelFactory variants with different lookback periods."""
     return {
         "momentum_1d": NaiveModelFactory(lookback=1),
         "momentum_2d": NaiveModelFactory(lookback=2),
@@ -177,25 +174,48 @@ def build_momentum_factories() -> dict[str, NaiveModelFactory]:
     }
 
 
+def build_god_combinations(n_tickers: int = 52) -> dict[str, tuple[WalkForwardConfig, NaiveModelFactory]]:
+    dynamic_max_weight = min(0.25, 2.0 / max(n_tickers, 1))
+    params = {
+        "rebal1d": {"rebalance_every": 1},
+        "cov63": {"lookback_days": 63},
+        "tilt100": {"hrp_config": HRPConfig(confidence_tilt_cap=1.0, max_weight=dynamic_max_weight)},
+        "mom1d": {"lookback": 1}
+    }
+    combinations: dict[str, tuple[WalkForwardConfig, NaiveModelFactory]] = {}
+    keys = list(params.keys())
+    for r in [2, 3, 4]:
+        for combo in itertools.combinations(keys, r):
+            name = "god_" + "_".join(combo)
+            c_kwargs: dict[str, Any] = {}
+            f_kwargs: dict[str, int] = {"lookback": 5}
+            for key in combo:
+                if key == "mom1d":
+                    f_kwargs.update(params[key])
+                else:
+                    c_kwargs.update(params[key])
+            config = _base_config(**c_kwargs)
+            factory = NaiveModelFactory(**f_kwargs)
+            combinations[name] = (config, factory)
+    return combinations
+
+
 def build_all_configs(
     subset: str = "all",
     n_tickers: int = 52,
 ) -> dict[str, WalkForwardConfig]:
-    """Build the full grid of configurations to validate."""
     configs: dict[str, WalkForwardConfig] = {}
 
     if subset in ("all", "tier1"):
         configs.update(build_tier1_configs(n_tickers))
-
     if subset in ("all", "tier2"):
         configs.update(build_tier2_configs(n_tickers))
-        
     if subset in ("all", "tier3"):
         configs.update(build_tier3_configs(n_tickers))
+    if subset in ("all", "tier4"):
+        configs.update(build_tier4_configs(n_tickers))
 
-    # Always ensure baseline is present if we are testing a specific tier
-    # so we have a reference point, unless it's explicitly omitted by the user logic.
-    if "baseline" not in configs:
+    if "baseline" not in configs and subset != "god":
         configs["baseline"] = _base_config()
 
     return configs
@@ -247,12 +267,6 @@ def _save_summary_md(
             accepted_str = "YES" if r.accepted else "no"
             lines.append(f"| {i} | {name} | {r.mean_sharpe:.3f} | {r.std_sharpe:.3f} | {r.pct_positive:.1%} | {r.p_value:.3f} | {accepted_str} |")
 
-    lines.extend([
-        "", "## Legend", "",
-        "- **Pct+**: Fraction of CPCV paths with Sharpe > 0",
-        "- **DSR p-value**: Deflated Sharpe Ratio (>0.95 = significant)",
-        "- **Accepted**: Pct+ >= 66.7% AND DSR p-value > 0.95", ""
-    ])
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     logger.info("Validation summary saved to {}", path)
@@ -267,11 +281,7 @@ def _save_per_path_parquet(
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "validation_per_path.parquet"
     rows = []
-    all_results = list(results)
-    if momentum_results:
-        all_results.extend(momentum_results)
-
-    for name, r in all_results:
+    for name, r in list(results) + (momentum_results or []):
         for path_idx, sharpe in enumerate(r.per_path_sharpe):
             rows.append({"config": name, "path_id": path_idx, "sharpe": sharpe, "accepted": r.accepted})
 
@@ -295,32 +305,51 @@ def run_improvement_validation(
 ) -> dict[str, ValidationResult]:
     out_path = Path(output_dir)
 
-    logger.info("Step 1/6: Building configuration grid (subset={})", subset)
+    logger.info("Step 1/8: Building configuration grid (subset={})", subset)
     configs = build_all_configs(subset, n_tickers=len(tickers))
-    logger.info("  {} configurations to validate", len(configs))
+    logger.info("  {} base configurations to validate", len(configs))
 
-    logger.info("Step 2/6: Building momentum factory variants")
-    factories = build_momentum_factories()
+    logger.info("Step 2/8: Building momentum factory variants")
+    factories = {}
+    if subset not in ("god", "tier4"):
+        factories = build_momentum_factories()
     logger.info("  {} momentum variants", len(factories))
 
-    logger.info("Step 3/6: Creating CPCV-OOS validator")
+    logger.info("Step 3/8: Building God Mode combinations")
+    god_combinations = {}
+    if subset in ("all", "god"):
+        god_combinations = build_god_combinations(n_tickers=len(tickers))
+    logger.info("  {} god combinations", len(god_combinations))
+
+    logger.info("Step 4/8: Creating CPCV-OOS validator")
     validator = CPCVParameterValidator(ohlcv=ohlcv, tickers=tickers, benchmark_ticker=benchmark_ticker)
-    n_total_trials = len(configs) + len(factories)
+    n_total_trials = len(configs) + len(factories) + len(god_combinations)
 
-    logger.info("Step 4/6: Running config grid search ({} configs)", len(configs))
-    config_results = validator.grid_search(configs=configs, model_factory=NaiveModelFactory(), n_trials=n_total_trials)
+    logger.info("Step 5/8: Running base config grid search ({} configs)", len(configs))
+    # Se estamos no Tier 4, usamos o momentum de 1 dia como fábrica padrão para validar os filtros
+    default_factory = NaiveModelFactory(lookback=1) if subset == "tier4" else NaiveModelFactory()
+    config_results = validator.grid_search(configs=configs, model_factory=default_factory, n_trials=n_total_trials)
 
-    logger.info("Step 5/6: Running momentum factory grid search ({} variants)", len(factories))
+    logger.info("Step 6/8: Running momentum factory grid search ({} variants)", len(factories))
     baseline_config = _base_config()
     momentum_results = []
     for i, (name, factory) in enumerate(factories.items()):
         logger.info("  Momentum [{}/{}]: {}", i + 1, len(factories), name)
         result = validator.validate(config=baseline_config, model_factory=factory, n_trials=n_total_trials)
         momentum_results.append((name, result))
-
     momentum_results.sort(key=lambda x: x[1].deflated_sharpe, reverse=True)
 
-    logger.info("Step 6/6: Saving outputs")
+    logger.info("Step 7/8: Running God Mode grid search ({} variants)", len(god_combinations))
+    god_results = []
+    for i, (name, (config, factory)) in enumerate(god_combinations.items()):
+        logger.info("  God Mode [{}/{}]: {}", i + 1, len(god_combinations), name)
+        result = validator.validate(config=config, model_factory=factory, n_trials=n_total_trials)
+        god_results.append((name, result))
+    god_results.sort(key=lambda x: x[1].deflated_sharpe, reverse=True)
+
+    config_results.extend(god_results)
+
+    logger.info("Step 8/8: Saving outputs")
     _save_results_json(config_results + momentum_results, out_path)
     _save_summary_md(config_results, momentum_results, out_path)
     _save_per_path_parquet(config_results, momentum_results, out_path)

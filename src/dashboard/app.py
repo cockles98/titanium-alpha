@@ -459,6 +459,43 @@ def _chart_weight_heatmap(weights_df: Any) -> go.Figure | None:
     return fig
 
 
+def _load_validation_results() -> dict[str, Any] | None:
+    """Load CPCV-OOS validation_results.json if available."""
+    path = DATA_DIR / "validation_results.json"
+    if not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+# Validated strategy configuration (Session 35 — CPCV-OOS approved)
+_VALIDATED_CONFIG: dict[str, Any] = {
+    "Model Factory": "NaiveModelFactory(lookback=1)",
+    "rebalance_every": 1,
+    "retrain_every": 126,
+    "lookback_days": 63,
+    "costs": "slippage=5bps + commission=10bps",
+    "min_rebalance_delta": 0.01,
+    "target_vol": 0.15,
+    "vol_lookback": 21,
+    "confidence_tilt_cap": 1.0,
+    "max_weight": 0.15,
+}
+
+# Key findings from stress testing
+_STRESS_FINDINGS: list[str] = [
+    "Alpha is ultra-short-term: 1-day momentum + daily rebalance maximises Sharpe.",
+    "Strategy supports up to ~30 bps total cost with OOS Sharpe > 1.5.",
+    "At 50 bps cost Sharpe drops to ~0.89; at 75 bps strategy breaks.",
+    "Vol targeting (15%, 21d lookback) crushes tail kurtosis from ~26 to ~9.4.",
+    "Max weight cap at 15% per asset — above this, no performance gain.",
+    "Bug fix: port_ret now uses start-of-day value (costs reflected in Sharpe).",
+]
+
+
 def tab_benchmark(
     equity_df: Any | None,
     metrics: dict[str, float] | None,
@@ -473,6 +510,55 @@ def tab_benchmark(
             "benchmark results."
         )
         return
+
+    # --- Strategy Configuration expander
+    with st.expander("Strategy Configuration (CPCV-OOS validated)", expanded=False):
+        st.caption("Parameters validated via Deflated Sharpe Ratio on 15 CPCV-OOS paths.")
+        cfg_col1, cfg_col2 = st.columns(2)
+        cfg_items = list(_VALIDATED_CONFIG.items())
+        mid_cfg = len(cfg_items) // 2
+        with cfg_col1:
+            for k, v in cfg_items[:mid_cfg]:
+                st.markdown(
+                    f"<div style='display:flex; justify-content:space-between; "
+                    f"padding:3px 6px; border-bottom:1px solid #333;'>"
+                    f"<span style='color:#aaa;'>{k}</span>"
+                    f"<span style='color:{_ACCENT_BLUE}; font-weight:bold;'>{v}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+        with cfg_col2:
+            for k, v in cfg_items[mid_cfg:]:
+                st.markdown(
+                    f"<div style='display:flex; justify-content:space-between; "
+                    f"padding:3px 6px; border-bottom:1px solid #333;'>"
+                    f"<span style='color:#aaa;'>{k}</span>"
+                    f"<span style='color:{_ACCENT_BLUE}; font-weight:bold;'>{v}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+        st.markdown("**Key Findings (Stress Test & Optimization):**")
+        for finding in _STRESS_FINDINGS:
+            st.markdown(f"- {finding}")
+
+    # --- Validation Results expander (if available)
+    validation = _load_validation_results()
+    if validation and "configs" in validation:
+        with st.expander("CPCV-OOS Validation Results", expanded=False):
+            st.caption(f"Generated: {validation.get('generated_at', 'N/A')}")
+            configs = validation["configs"]
+            rows = []
+            for name, data in configs.items():
+                rows.append({
+                    "Config": name,
+                    "Mean Sharpe": f"{data.get('mean_sharpe', 0):.3f}",
+                    "Std": f"{data.get('std_sharpe', 0):.3f}",
+                    "Pct+": f"{data.get('pct_positive', 0):.0%}",
+                    "DSR p-value": f"{data.get('p_value', 0):.3f}",
+                    "Accepted": "YES" if data.get("accepted") else "no",
+                })
+            st.dataframe(rows, use_container_width=True, hide_index=True)
 
     # Equity curve with log toggle
     col_toggle, _ = st.columns([1, 4])
@@ -1178,8 +1264,17 @@ def _render_live_debate() -> None:
 def _chart_quantile_fan(
     forecast_rows: list[dict[str, Any]],
     ticker: str,
+    last_close: float | None = None,
 ) -> go.Figure:
-    """Plotly fan chart with quantile confidence bands."""
+    """Plotly fan chart with quantile confidence bands.
+
+    Args:
+        forecast_rows: List of forecast row dicts from forecast.parquet.
+        ticker: Ticker symbol for chart title.
+        last_close: Last known close price.  When provided, a horizontal
+            reference line is drawn so the user can visually compare the
+            forecast against the current price.
+    """
     # Detect quantile columns
     if not forecast_rows:
         fig = go.Figure()
@@ -1192,9 +1287,25 @@ def _chart_quantile_fan(
         return fig
 
     sample = forecast_rows[0]
-    q_cols = sorted(
-        [c for c in sample.keys() if c.startswith("PatchTST-") and c not in ("date", "ds")]
-    )
+    _raw_q_cols = [
+        c for c in sample.keys() if c.startswith("PatchTST-") and c not in ("date", "ds")
+    ]
+
+    def _col_to_quantile(col: str) -> float:
+        """Return the quantile level for sorting (old and new NeuralForecast naming)."""
+        if "-lo-" in col:
+            return (100.0 - float(col.split("-lo-")[1])) / 200.0
+        if "-hi-" in col:
+            return (100.0 + float(col.split("-hi-")[1])) / 200.0
+        if "median" in col:
+            return 0.5
+        # Old format: PatchTST-q0.1, PatchTST-q0.25, etc.
+        try:
+            return float(col.split("-q")[1])
+        except (IndexError, ValueError):
+            return 0.5
+
+    q_cols = sorted(_raw_q_cols, key=_col_to_quantile)
 
     # Extract dates and quantile values
     dates = [r.get("ds", r.get("date", i)) for i, r in enumerate(forecast_rows)]
@@ -1202,6 +1313,19 @@ def _chart_quantile_fan(
     dates_str = [str(d) for d in dates]
 
     fig = go.Figure()
+
+    # Last close reference line (drawn first so bands layer on top)
+    if last_close is not None:
+        fig.add_hline(
+            y=last_close,
+            line_dash="dot",
+            line_color=_ACCENT_GOLD,
+            opacity=0.8,
+            annotation_text=f"Close: {last_close:,.2f}",
+            annotation_position="top left",
+            annotation_font_color=_ACCENT_GOLD,
+            annotation_font_size=11,
+        )
 
     # Fan bands (outer to inner for proper layering)
     band_pairs = []
@@ -1442,7 +1566,11 @@ def tab_microstructure(
     # --- PatchTST fan chart ---
     if forecast and selected in forecast:
         st.subheader("PatchTST Quantile Forecast")
-        fig = _chart_quantile_fan(forecast[selected], selected)
+        # Pass last_close for reference line (if available in predictions)
+        close_ref = None
+        if predictions and selected in predictions:
+            close_ref = predictions[selected].get("last_close")
+        fig = _chart_quantile_fan(forecast[selected], selected, last_close=close_ref)
         st.plotly_chart(fig, use_container_width=True)
         st.divider()
 

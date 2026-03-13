@@ -17,12 +17,15 @@ from src.dashboard.app import (
     AGENT_STYLES,
     _METRIC_LABELS,
     _NODE_TO_AGENT,
+    _STRESS_FINDINGS,
+    _VALIDATED_CONFIG,
     _chart_benchmark_drawdown,
     _chart_benchmark_equity,
     _chart_quantile_fan,
     _chart_weight_comparison,
     _chart_weight_donut,
     _format_metric_value,
+    _load_validation_results,
     _metric_color,
     _replay_debate,
     _run_live_debate_thread,
@@ -273,6 +276,20 @@ class TestCharts:
         # 2 bands (4 traces) + 1 median = 5
         assert len(fig.data) == 5
 
+    def test_quantile_fan_chart_with_last_close(
+        self, sample_forecast_rows: list[dict[str, Any]]
+    ) -> None:
+        fig = _chart_quantile_fan(sample_forecast_rows, "SPY", last_close=500.0)
+        assert fig is not None
+        # 2 bands (4 traces) + 1 median + 1 hline shape = 5 traces
+        # hline is added via layout.shapes, not data traces
+        assert len(fig.data) == 5
+        # Check that the hline annotation exists
+        assert any(
+            "Close" in (a.text or "")
+            for a in (fig.layout.annotations or [])
+        )
+
     def test_quantile_fan_empty(self) -> None:
         fig = _chart_quantile_fan([], "SPY")
         assert fig is not None
@@ -284,6 +301,31 @@ class TestCharts:
         assert fig is not None
         # No quantile columns → no traces
         assert len(fig.data) == 0
+
+    def test_quantile_fan_new_naming_median_above_close(self) -> None:
+        """New NF naming: median line must appear ABOVE last_close when forecast is bullish."""
+        # Median (957) is above close (955) — bullish AXP-like scenario
+        rows = [
+            {
+                "ds": f"2026-03-{7 + i:02d}",
+                "PatchTST-lo-80.0": 920.0 + i * 2,
+                "PatchTST-lo-50.0": 935.0 + i * 3,
+                "PatchTST-median": 957.0 + i * 4,
+                "PatchTST-hi-50.0": 970.0 + i * 4,
+                "PatchTST-hi-80.0": 990.0 + i * 5,
+            }
+            for i in range(5)
+        ]
+        fig = _chart_quantile_fan(rows, "AXP", last_close=955.0)
+        assert fig is not None
+        assert len(fig.data) == 5  # 4 band traces + 1 median
+
+        # The median trace (last one) must have values above 955
+        median_trace = fig.data[-1]
+        assert median_trace.name == "Median"
+        assert all(v > 955.0 for v in median_trace.y), (
+            f"Median should be above close=955 for bullish forecast, got {median_trace.y}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -630,3 +672,60 @@ class TestBenchmarkCharts:
         assert fig is not None
         assert len(fig.data) == 1
         assert fig.data[0].fill == "tozeroy"
+
+
+# ---------------------------------------------------------------------------
+# Session 35: Validated config & validation results
+# ---------------------------------------------------------------------------
+
+
+class TestValidatedConfig:
+    """Tests for _VALIDATED_CONFIG and _STRESS_FINDINGS constants."""
+
+    def test_config_has_required_keys(self) -> None:
+        assert "rebalance_every" in _VALIDATED_CONFIG
+        assert "target_vol" in _VALIDATED_CONFIG
+        assert "max_weight" in _VALIDATED_CONFIG
+        assert "confidence_tilt_cap" in _VALIDATED_CONFIG
+
+    def test_config_values(self) -> None:
+        assert _VALIDATED_CONFIG["rebalance_every"] == 1
+        assert _VALIDATED_CONFIG["target_vol"] == 0.15
+        assert _VALIDATED_CONFIG["max_weight"] == 0.15
+        assert _VALIDATED_CONFIG["lookback_days"] == 63
+
+    def test_stress_findings_not_empty(self) -> None:
+        assert len(_STRESS_FINDINGS) > 0
+        assert all(isinstance(f, str) for f in _STRESS_FINDINGS)
+
+
+class TestLoadValidationResults:
+    """Tests for _load_validation_results."""
+
+    def test_returns_none_when_missing(self, tmp_path: Path) -> None:
+        with patch("src.dashboard.app.DATA_DIR", tmp_path):
+            result = _load_validation_results()
+        assert result is None
+
+    def test_loads_valid_json(self, tmp_path: Path) -> None:
+        data = {
+            "generated_at": "2026-03-13T12:00:00",
+            "configs": {
+                "baseline": {"mean_sharpe": 0.5, "accepted": True},
+            },
+        }
+        path = tmp_path / "validation_results.json"
+        with open(path, "w") as f:
+            json.dump(data, f)
+        with patch("src.dashboard.app.DATA_DIR", tmp_path):
+            result = _load_validation_results()
+        assert result is not None
+        assert "configs" in result
+        assert "baseline" in result["configs"]
+
+    def test_returns_none_on_corrupt_json(self, tmp_path: Path) -> None:
+        path = tmp_path / "validation_results.json"
+        path.write_text("not valid json{{{")
+        with patch("src.dashboard.app.DATA_DIR", tmp_path):
+            result = _load_validation_results()
+        assert result is None

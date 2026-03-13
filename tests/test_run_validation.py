@@ -200,11 +200,13 @@ class TestBuildTier2:
 class TestBuildAllConfigs:
     """Tests for build_all_configs."""
 
-    def test_all_includes_both_tiers(self) -> None:
+    def test_all_includes_all_tiers(self) -> None:
         configs = build_all_configs("all")
         assert "baseline" in configs  # tier1
         assert "rebalance_10d" in configs  # tier2
-        assert len(configs) == 17  # 7 + 10
+        assert "rebalance_1d" in configs  # tier3
+        assert "t4_vol_lookback_21" in configs  # tier4
+        assert len(configs) == 39  # 7 + 10 + 13 + 9
 
     def test_tier1_only(self) -> None:
         configs = build_all_configs("tier1")
@@ -214,9 +216,9 @@ class TestBuildAllConfigs:
 
     def test_tier2_only(self) -> None:
         configs = build_all_configs("tier2")
-        assert "baseline" not in configs
+        assert "baseline" in configs  # auto-added if not present
         assert "rebalance_10d" in configs
-        assert len(configs) == 10
+        assert len(configs) == 11  # 10 tier2 + 1 baseline
 
 
 class TestBuildMomentumFactories:
@@ -224,10 +226,11 @@ class TestBuildMomentumFactories:
 
     def test_count(self) -> None:
         factories = build_momentum_factories()
-        assert len(factories) == 4
+        assert len(factories) == 8
 
     def test_lookback_values(self) -> None:
         factories = build_momentum_factories()
+        assert factories["momentum_1d"].lookback == 1
         assert factories["momentum_5d"].lookback == 5
         assert factories["momentum_21d"].lookback == 21
         assert factories["momentum_63d"].lookback == 63
@@ -513,8 +516,8 @@ class TestRunImprovementValidation:
             subset="tier1",
         )
 
-        # 4 momentum factories → 4 validate() calls
-        assert mock_validator.validate.call_count == 4
+        # 8 momentum factories → 8 validate() calls
+        assert mock_validator.validate.call_count == 8
 
     @patch("src.backtest.run_validation.CPCVParameterValidator")
     def test_includes_momentum_in_results(
@@ -560,12 +563,12 @@ class TestRunImprovementValidation:
             subset="tier1",
         )
 
-        # n_trials should be len(tier1_configs) + len(factories) = 7 + 4 = 11
-        # for BOTH grid_search and individual validate() calls
+        # n_trials = len(tier1_configs) + len(factories) + len(god_combos)
+        # For tier1: 7 + 8 + 0 = 15
         grid_call = mock_validator.grid_search.call_args
         grid_n_trials = grid_call.kwargs.get("n_trials")
-        assert grid_n_trials == 11
+        assert grid_n_trials == 15
 
         validate_call = mock_validator.validate.call_args
         validate_n_trials = validate_call.kwargs.get("n_trials")
-        assert validate_n_trials == 11
+        assert validate_n_trials == 15

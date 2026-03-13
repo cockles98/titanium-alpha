@@ -534,6 +534,10 @@ class WalkForwardBacktester:
             # Row index in returns_wide
             row_idx = warmup_end + i
 
+            # Capture start-of-day value before costs/rebalance so that
+            # port_ret correctly includes transaction cost drag.
+            portfolio_value_start_of_day = portfolio_value
+
             # -- Retrain check (skip when in cash — nothing to trade)
             retrained = False
             if not in_cash and days_since_retrain >= cfg.retrain_every:
@@ -711,9 +715,12 @@ class WalkForwardBacktester:
                     holdings[t] *= (1.0 + asset_ret)
 
                 portfolio_value = sum(holdings.values()) + cash
+                
+                # Use start-of-day value as base so that rebalance
+                # costs are correctly reflected in the return series.
                 port_ret = (
-                    (portfolio_value / old_portfolio_value - 1.0)
-                    if old_portfolio_value > 0
+                    (portfolio_value / portfolio_value_start_of_day - 1.0)
+                    if portfolio_value_start_of_day > 0
                     else 0.0
                 )
 
