@@ -34,7 +34,7 @@ from src.backtest.walk_forward import (
     WalkForwardConfig,
     WalkForwardResult,
 )
-from src.portfolio.hrp import HRPConfig
+from src.portfolio.hrp import HRPConfig  # noqa: F401 — used by _PatchTSTModelFactory
 from src.config import load_benchmark, load_ticker_config, load_tickers
 
 
@@ -101,7 +101,7 @@ def _filter_oos_period(
     """Filter DataFrame to the out-of-sample period.
 
     Keeps only the last ``n_years`` of data based on the maximum date
-    in the DataFrame.
+    in the DataFrame. Correctly accounts for leap years.
 
     Args:
         df: OHLCV DataFrame with a ``date`` column.
@@ -111,8 +111,16 @@ def _filter_oos_period(
         Filtered DataFrame.
     """
     max_date = df["date"].max()
-    cutoff = max_date - timedelta(days=n_years * 365)
+    
+    # Calcula o cutoff com segurança para anos bissextos (ex: 29 de fevereiro)
+    try:
+        cutoff = max_date.replace(year=max_date.year - n_years)
+    except ValueError:
+        # Cai aqui se max_date for 29 de fev e o ano alvo não for bissexto
+        cutoff = max_date.replace(year=max_date.year - n_years, day=28)
+
     filtered = df.filter(pl.col("date") >= cutoff)
+    
     logger.info(
         "OOS filter: {} years | cutoff={} | {} → {} rows",
         n_years,
@@ -140,7 +148,7 @@ def _resolve_model_factory(use_patchtst: bool) -> Any:
     """
     if not use_patchtst:
         logger.info("Using NaiveModelFactory (fast mode)")
-        return NaiveModelFactory(lookback=1)
+        return NaiveModelFactory(lookback=5)
 
     # Lazy import to avoid heavy deps when running in fast mode
     try:
@@ -179,7 +187,7 @@ class _PatchTSTModelFactory:
         except Exception as e:
             if "too short" in str(e).lower():
                 logger.warning("Series too short for PatchTST; using NaiveModelFactory fallback")
-                self._fallback = NaiveModelFactory(lookback=1)
+                self._fallback = NaiveModelFactory(lookback=5)
                 self._forecaster = None
             else:
                 raise
@@ -329,25 +337,20 @@ def run_us_benchmark(
 
     # Step 5: Walk-forward backtest
     logger.info("Step 5/7: Running walk-forward backtest")
-    n_tickers = len(tickers)
     wf_config = WalkForwardConfig(
-        rebalance_every=1,             # Velocidade: Giro diário
-        retrain_every=126,             # Pode manter semestral para o modelo
-        lookback_days=63,              # Matriz de Risco: 63 dias (curta)
+        rebalance_every=5,             # Semanal (baseline)
+        retrain_every=126,             # Semestral
+        lookback_days=504,             # ~2 anos de dados (baseline)
         initial_capital=1_000_000.0,
         costs=TransactionCosts(
-            slippage_bps=5.0,          # Otimista (exige execução passiva no mercado)
+            slippage_bps=5.0,
             commission_bps=10.0,
         ),
-        min_rebalance_delta=0.01,      # Filtro leve para evitar poeira
+        min_rebalance_delta=0.02,      # 2% threshold (baseline)
         trading_days_per_year=trading_days,
         rf=rf,
-        target_vol=0.15,               # Escala de risco: Volatilidade alvo de 15%
-        vol_lookback=21,               # Velocidade de reação ao risco: 1 mês
-        hrp_config=HRPConfig(
-            confidence_tilt_cap=1.0,   # Agressividade máxima nos melhores sinais
-            max_weight=0.15            # Concentração máxima em 15% por ativo
-        )
+        # target_vol=None → sem vol targeting (baseline)
+        # hrp_config=None → usa default dinâmico min(0.25, 2/n)
     )
 
     backtester = WalkForwardBacktester(config=wf_config)

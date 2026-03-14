@@ -125,7 +125,7 @@ class MarketDataIngester:
                     ticker,
                     start=str(self.start_date),
                     end=str(self.end_date),
-                    auto_adjust=False,
+                    auto_adjust=True,
                     progress=False,
                 )
 
@@ -140,7 +140,9 @@ class MarketDataIngester:
                 # Convert Pandas → Polars immediately
                 df = pl.from_pandas(pdf)
 
-                # Normalize column names to our schema
+                # Normalize column names to our schema.
+                # With auto_adjust=True, OHLC are already split+dividend
+                # adjusted — no separate "Adj Close" column exists.
                 df = df.rename(
                     {
                         "Date": "date",
@@ -149,10 +151,13 @@ class MarketDataIngester:
                         "Low": "low",
                         "Close": "close",
                         "Volume": "volume",
-                        "Adj Close": "adj_close",
                     }
                 )
-                df = df.with_columns(pl.lit(ticker).alias("ticker"))
+                # adj_close = close when auto_adjust=True
+                df = df.with_columns([
+                    pl.lit(ticker).alias("ticker"),
+                    pl.col("close").alias("adj_close"),
+                ])
 
                 # Select and cast to final schema
                 df = df.select(

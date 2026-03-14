@@ -473,16 +473,15 @@ def _load_validation_results() -> dict[str, Any] | None:
 
 # Validated strategy configuration (Session 35 — CPCV-OOS approved)
 _VALIDATED_CONFIG: dict[str, Any] = {
-    "Model Factory": "NaiveModelFactory(lookback=1)",
-    "rebalance_every": 1,
+    "Model Factory": "NaiveModelFactory(lookback=5)",
+    "rebalance_every": 5,
     "retrain_every": 126,
-    "lookback_days": 63,
+    "lookback_days": 504,
     "costs": "slippage=5bps + commission=10bps",
-    "min_rebalance_delta": 0.01,
-    "target_vol": 0.15,
-    "vol_lookback": 21,
-    "confidence_tilt_cap": 1.0,
-    "max_weight": 0.15,
+    "min_rebalance_delta": 0.02,
+    "target_vol": "None (disabled)",
+    "confidence_tilt_cap": 0.20,
+    "max_weight": "min(0.25, 2/n)",
 }
 
 # Key findings from stress testing

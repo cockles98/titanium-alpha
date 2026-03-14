@@ -102,7 +102,7 @@ class TestWalkForwardConfig:
         assert cfg.lookback_days == 504
         assert cfg.initial_capital == 1_000_000.0
         assert cfg.costs is None
-        assert cfg.min_rebalance_delta == 0.0
+        assert cfg.min_rebalance_delta == 0.02
         assert cfg.trading_days_per_year == 252
         assert cfg.rf == 0.05
 
@@ -1274,15 +1274,16 @@ class TestDrawdownKillswitch:
         final_ks = res_ks.equity_curve["portfolio_value"][-1]
         assert final_no != pytest.approx(final_ks, rel=0.01)
 
-    def test_in_cash_portfolio_value_stable(self) -> None:
-        """While in cash, portfolio value should not change with market moves."""
+    def test_in_cash_portfolio_earns_rf(self) -> None:
+        """While in cash, portfolio should grow at rf only (not market)."""
         # Use extreme crash to guarantee killswitch triggers
         ohlcv = _make_crash_ohlcv(
             n_normal=100, n_crash=50, crash_daily_ret=-0.05,
             n_recovery=50,
         )
+        rf = 0.05
         cfg = WalkForwardConfig(
-            lookback_days=50, rebalance_every=5,
+            lookback_days=50, rebalance_every=5, rf=rf,
             killswitch=KillswitchConfig(
                 max_drawdown_pct=-0.05,  # very sensitive trigger
                 recovery_threshold_pct=-0.01,  # hard to recover
@@ -1292,17 +1293,15 @@ class TestDrawdownKillswitch:
         bt = WalkForwardBacktester(config=cfg)
         result = bt.run(ohlcv, ["A", "B", "C"], "SPY", NaiveModelFactory())
 
-        # Find the point where portfolio goes flat (killswitch on)
-        portfolio_vals = result.equity_curve["portfolio_value"].to_list()
-        # After killswitch, consecutive values should be equal (in cash)
-        found_flat = False
-        for j in range(1, len(portfolio_vals)):
-            if portfolio_vals[j] == pytest.approx(
-                portfolio_vals[j - 1], rel=1e-12
-            ):
-                found_flat = True
+        # Find days where return equals daily rf (killswitch active)
+        daily_rf = rf / cfg.trading_days_per_year
+        port_rets = result.daily_returns["portfolio_return"].to_list()
+        found_rf_carry = False
+        for ret in port_rets:
+            if ret == pytest.approx(daily_rf, rel=1e-6):
+                found_rf_carry = True
                 break
-        assert found_flat, "Should find flat period while in cash"
+        assert found_rf_carry, "Should find rf-carry period while in cash"
 
     def test_exit_costs_applied(self) -> None:
         """Killswitch exit should incur transaction costs."""
