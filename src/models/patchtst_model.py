@@ -124,6 +124,7 @@ class TitaniumForecaster:
             early_stop_patience_steps=self.early_stop_patience_steps,
             val_check_steps=self.val_check_steps,
             random_seed=self.random_seed,
+            start_padding_enabled=True,
         )
         logger.debug(
             "PatchTST built: h={}, input_size={}, quantiles={}",

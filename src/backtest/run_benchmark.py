@@ -157,29 +157,43 @@ def _resolve_model_factory(use_patchtst: bool) -> Any:
 
 
 class _PatchTSTModelFactory:
-    """ModelFactory adapter wrapping TitaniumForecaster.
+    """ModelFactory adapter wrapping TitaniumForecaster with fallback.
 
     Implements the ``ModelFactory`` protocol by delegating to
     ``TitaniumForecaster.fit()`` and ``TitaniumForecaster.predict_proba()``.
+    Falls back to NaiveModelFactory if series is too short.
     """
 
     def __init__(self) -> None:
         self._forecaster: Any = None
+        self._fallback: Any = None
 
     def train(self, train_df: pl.DataFrame) -> None:
-        """Train PatchTST on historical OHLCV data."""
+        """Train PatchTST on historical OHLCV data, with fallback for short series."""
         from src.models.patchtst_model import TitaniumForecaster
 
-        self._forecaster = TitaniumForecaster()
-        self._forecaster.fit(train_df)
+        try:
+            self._forecaster = TitaniumForecaster()
+            self._forecaster.fit(train_df)
+            self._fallback = None
+        except Exception as e:
+            if "too short" in str(e).lower():
+                logger.warning("Series too short for PatchTST; using NaiveModelFactory fallback")
+                self._fallback = NaiveModelFactory(lookback=1)
+                self._forecaster = None
+            else:
+                raise
 
     def predict(self, df: pl.DataFrame) -> dict[str, float]:
-        """Generate per-ticker confidence scores via PatchTST.
+        """Generate per-ticker confidence scores via PatchTST or fallback.
 
         Returns:
             ``{ticker: P(up)}`` where P(up) is the probability of
             price increase over the forecast horizon.
         """
+        if self._fallback is not None:
+            return self._fallback.predict(df)
+
         if self._forecaster is None:
             # Not yet trained — return neutral
             tickers = df["ticker"].unique().sort().to_list()
