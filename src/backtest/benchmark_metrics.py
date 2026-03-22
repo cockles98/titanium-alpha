@@ -68,12 +68,16 @@ def _compute_drawdown_series(cumulative: list[float]) -> list[float]:
     if not cumulative:
         return []
 
-    peak = cumulative[0]
+    # O pico DEVE começar no capital inicial (1.0), caso contrário 
+    # ignoramos perdas que ocorram no exato primeiro dia do backtest.
+    peak = 1.0 
     dd: list[float] = []
+    
     for val in cumulative:
         if val > peak:
             peak = val
         dd.append((val - peak) / peak if peak != 0 else 0.0)
+        
     return dd
 
 
@@ -106,6 +110,7 @@ def _compute_monthly_returns(
     """Aggregate daily returns into monthly returns.
 
     Groups by (year, month) and compounds within each group.
+    Ensures chronological order even if inputs are out of order.
 
     Args:
         daily_returns: Simple daily returns.
@@ -123,7 +128,8 @@ def _compute_monthly_returns(
         key = (d.year, d.month)
         monthly[key] = monthly.get(key, 1.0) * (1.0 + r)
 
-    return [v - 1.0 for v in monthly.values()]
+    # Ordena as chaves (ano, mês) para garantir a consistência cronológica
+    return [monthly[key] - 1.0 for key in sorted(monthly.keys())]
 
 
 def _capm_regression(
@@ -217,7 +223,9 @@ def compute_benchmark_metrics(
     calmar = cagr / abs(max_dd) if max_dd != 0.0 else 0.0
 
     # ---- Risk-adjusted metrics
-    rf_daily = rf / trading_days
+    # Conversão geométrica da taxa livre de risco anual para diária
+    rf_daily = (1.0 + rf) ** (1.0 / trading_days) - 1.0
+    
     excess_port = [r - rf_daily for r in port_ret]
     excess_bench = [r - rf_daily for r in bench_ret]
 
@@ -232,9 +240,12 @@ def compute_benchmark_metrics(
     # ---- Relative metrics (vs benchmark)
     active_ret = [p - b for p, b in zip(port_ret, bench_ret)]
     tracking_error = _std(active_ret) * math.sqrt(trading_days)
+    
+    # Information Ratio: Retorno ativo anualizado dividido pelo Tracking Error
+    annualized_active_return = (sum(active_ret) / n) * trading_days
     info_ratio = (
-        (sum(active_ret) / n * math.sqrt(trading_days)) / _std(active_ret)
-        if _std(active_ret) > 0
+        annualized_active_return / tracking_error
+        if tracking_error > 0
         else 0.0
     )
 

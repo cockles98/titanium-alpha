@@ -103,6 +103,13 @@ Desvantagem: requer redesign da integração agente-portfólio.
 
 ## Status atual
 
-- Pendente — documentado em 2026-03-13
-- Nenhuma das opções foi implementada
-- O sistema funciona em produção mas com sinal degradado (0.5 uniform) quando agentes não estão disponíveis
+- **Opção A implementada + modelo três-tier (híbrido com C)** — 2026-03-16
+- O `DecisionEngine` agora classifica tickers em BUY / HOLD / SELL:
+  - **BUY**: peso HRP direto
+  - **HOLD**: peso HRP × confidence (< 0.3 por regra de validação → peso reduzido)
+  - **SELL**: peso 0
+- `sum(weights) <= 1.0` — diferença para 1.0 é cash implícito
+- Fallback inteligente: quando debate falha, `predictions.parquet` (prob_up do PatchTST) é usado como confidence para o tilt HRP, preservando o sinal validado
+- HRP roda apenas no subset investable (BUY + HOLD), sem renormalização para 1.0
+- Metadata novo inclui: `invested_fraction`, `confidence_source`, `n_buy`, `n_hold`, `n_sell`
+- **Opção B (backtest completo com agentes) permanece pendente** — custo alto de API

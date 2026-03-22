@@ -41,6 +41,9 @@ except Exception:
 # Theme / styling
 # ---------------------------------------------------------------------------
 
+_EXPECTED_SCHEMA_VERSION = "1.2"
+_MIN_DISPLAY_WEIGHT = 1e-8
+
 _DARK_BG = "#0E1117"
 _CARD_BG = "#1E2130"
 _ACCENT_BLUE = "#4A90D9"
@@ -303,34 +306,43 @@ def _chart_benchmark_equity(equity_df: Any, log_scale: bool = False) -> go.Figur
     return fig
 
 
-def _chart_benchmark_drawdown(equity_df: Any) -> go.Figure:
-    """Plotly drawdown chart (filled area)."""
-    dates = equity_df["date"].to_list()
-    values = equity_df["portfolio_value"].to_list()
-
-    # Compute drawdown
+def _compute_drawdown(values: list[float]) -> list[float]:
+    """Compute drawdown series from equity values."""
     peak = values[0]
     dd = []
     for v in values:
         if v > peak:
             peak = v
         dd.append((v - peak) / peak if peak != 0 else 0.0)
+    return dd
+
+
+def _chart_benchmark_drawdown(equity_df: Any) -> go.Figure:
+    """Plotly drawdown chart (filled area) — portfolio vs benchmark."""
+    dates = equity_df["date"].to_list()
+    port_dd = _compute_drawdown(equity_df["portfolio_value"].to_list())
+    bench_dd = _compute_drawdown(equity_df["benchmark_value"].to_list())
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=dates, y=dd, fill="tozeroy", name="Drawdown",
+        x=dates, y=port_dd, fill="tozeroy", name="Portfolio",
         line=dict(color=_ACCENT_RED, width=1),
         fillcolor="rgba(229, 57, 53, 0.3)",
     ))
+    fig.add_trace(go.Scatter(
+        x=dates, y=bench_dd, name=f"Benchmark ({_BENCHMARK_TICKER})",
+        line=dict(color=_ACCENT_GOLD, width=1, dash="dash"),
+    ))
 
     fig.update_layout(
-        title=dict(text="Portfolio Drawdown", font=dict(size=16, color=_TEXT)),
+        title=dict(text="Drawdown — Portfolio vs Benchmark", font=dict(size=16, color=_TEXT)),
         xaxis_title="Date",
         yaxis_title="Drawdown",
         yaxis_tickformat=".0%",
         paper_bgcolor=_DARK_BG,
         plot_bgcolor=_DARK_BG,
         font=dict(color=_TEXT),
+        legend=dict(font=dict(color=_TEXT)),
         height=350,
         margin=dict(t=50, b=40, l=60, r=20),
     )
@@ -341,33 +353,32 @@ def _chart_rolling_sharpe(equity_df: Any, window: int = 252) -> go.Figure | None
     """Rolling Sharpe ratio chart. Returns None if insufficient data."""
     import math
 
-    try:
-        import polars as pl
-        dr_path = DATA_DIR / "benchmark_equity.parquet"
-        df = pl.read_parquet(dr_path)
-    except Exception:
-        return None
-
-    portfolio = df["portfolio_value"].to_list()
-    benchmark = df["benchmark_value"].to_list()
-    dates = df["date"].to_list()
+    portfolio = equity_df["portfolio_value"].to_list()
+    benchmark = equity_df["benchmark_value"].to_list()
+    dates = equity_df["date"].to_list()
 
     if len(portfolio) < window + 1:
         return None
 
-    # Compute daily returns from equity values
-    port_rets = [0.0] + [(portfolio[i] / portfolio[i - 1] - 1.0) for i in range(1, len(portfolio))]
-    bench_rets = [0.0] + [(benchmark[i] / benchmark[i - 1] - 1.0) for i in range(1, len(benchmark))]
+    # Risk-free rate (geometric daily) consistent with rest of pipeline
+    rf_annual = 0.05
+    rf_daily = (1.0 + rf_annual) ** (1.0 / 252) - 1.0
 
-    # Rolling Sharpe
+    # Compute daily returns from equity values (skip first day)
+    port_rets = [(portfolio[i] / portfolio[i - 1] - 1.0) for i in range(1, len(portfolio))]
+    bench_rets = [(benchmark[i] / benchmark[i - 1] - 1.0) for i in range(1, len(benchmark))]
+    dates = dates[1:]
+
+    # Rolling Sharpe (excess returns over rf)
     def _rolling(rets: list[float], w: int) -> list[float | None]:
         result: list[float | None] = [None] * (w - 1)
         for i in range(w - 1, len(rets)):
             chunk = rets[i - w + 1: i + 1]
-            mean_r = sum(chunk) / len(chunk)
-            var_r = sum((r - mean_r) ** 2 for r in chunk) / (len(chunk) - 1)
-            std_r = math.sqrt(var_r) if var_r > 0 else 0.0
-            sharpe = (mean_r / std_r) * math.sqrt(252) if std_r > 0 else 0.0
+            excess = [r - rf_daily for r in chunk]
+            mean_ex = sum(excess) / len(excess)
+            var_ex = sum((e - mean_ex) ** 2 for e in excess) / (len(excess) - 1)
+            std_ex = math.sqrt(var_ex) if var_ex > 0 else 0.0
+            sharpe = (mean_ex / std_ex) * math.sqrt(252) if std_ex > 0 else 0.0
             result.append(sharpe)
         return result
 
@@ -474,24 +485,25 @@ def _load_validation_results() -> dict[str, Any] | None:
 # Validated strategy configuration (Session 35 — CPCV-OOS approved)
 _VALIDATED_CONFIG: dict[str, Any] = {
     "Model Factory": "NaiveModelFactory(lookback=5)",
-    "rebalance_every": 5,
+    "rebalance_every": 13,
     "retrain_every": 126,
-    "lookback_days": 504,
+    "lookback_days": 756,
     "costs": "slippage=5bps + commission=10bps",
     "min_rebalance_delta": 0.02,
     "target_vol": "None (disabled)",
-    "confidence_tilt_cap": 0.20,
+    "HRP linkage": "ward",
+    "HRP shrinkage": "Ledoit-Wolf",
     "max_weight": "min(0.25, 2/n)",
 }
 
 # Key findings from stress testing
 _STRESS_FINDINGS: list[str] = [
-    "Alpha is ultra-short-term: 1-day momentum + daily rebalance maximises Sharpe.",
-    "Strategy supports up to ~30 bps total cost with OOS Sharpe > 1.5.",
-    "At 50 bps cost Sharpe drops to ~0.89; at 75 bps strategy breaks.",
-    "Vol targeting (15%, 21d lookback) crushes tail kurtosis from ~26 to ~9.4.",
-    "Max weight cap at 15% per asset — above this, no performance gain.",
-    "Bug fix: port_ret now uses start-of-day value (costs reflected in Sharpe).",
+    "5-day momentum + biweekly rebalance (rb=13) validated via CPCV-OOS.",
+    "Ward linkage + Ledoit-Wolf shrinkage: +0.03 Sharpe each vs defaults.",
+    "Strategy supports up to ~30 bps total cost with positive OOS alpha.",
+    "Vol targeting disabled — hurts performance on this universe.",
+    "Max weight cap at min(0.25, 2/n) per asset.",
+    "Transaction costs: slippage 5bps + commission 10bps fully reflected.",
 ]
 
 
@@ -654,7 +666,10 @@ def _latest_benchmark_weights(weights_df: Any) -> dict[str, float]:
     Returns:
         ``{ticker: weight}`` from the latest rebalance date.
     """
-    import polars as pl
+    try:
+        import polars as pl
+    except ImportError:
+        return {}
 
     latest_date = weights_df["date"].max()
     latest = weights_df.filter(pl.col("date") == latest_date)
@@ -666,7 +681,11 @@ def _latest_benchmark_weights(weights_df: Any) -> dict[str, float]:
 
 def _render_benchmark_weight_table(weights_df: Any) -> None:
     """Render a table of the latest benchmark weights sorted by weight."""
-    import polars as pl
+    try:
+        import polars as pl
+    except ImportError:
+        st.warning("Polars not available.")
+        return
 
     latest_date = weights_df["date"].max()
     latest = (
@@ -687,7 +706,7 @@ def _chart_weight_donut(
     title: str = "HRP Portfolio Weights",
     top_n: int = 15,
 ) -> go.Figure:
-    """Plotly donut chart of portfolio weights (top N + Others).
+    """Plotly donut chart of portfolio weights (top N + Others + Cash).
 
     Args:
         weights: ``{ticker: weight}`` mapping.
@@ -703,8 +722,12 @@ def _chart_weight_donut(
         )
         return fig
 
-    # Sort by weight descending
-    sorted_items = sorted(weights.items(), key=lambda x: x[1], reverse=True)
+    # Sort by weight descending (exclude zero-weight tickers)
+    sorted_items = sorted(
+        ((t, w) for t, w in weights.items() if w > _MIN_DISPLAY_WEIGHT),
+        key=lambda x: x[1],
+        reverse=True,
+    )
 
     if len(sorted_items) > top_n:
         top = sorted_items[:top_n]
@@ -715,9 +738,17 @@ def _chart_weight_donut(
         tickers = [t for t, _ in sorted_items]
         values = [v for _, v in sorted_items]
 
+    # Show implicit cash when invested fraction < 100%
+    total_invested = sum(values)
+    if total_invested < 1.0 - 1e-6:
+        tickers.append("Cash")
+        values.append(1.0 - total_invested)
+
     colors = [_ticker_color(i) for i in range(len(tickers))]
-    if len(sorted_items) > top_n:
-        colors[-1] = "#555555"  # gray for "Others"
+    if "Others" in tickers:
+        colors[tickers.index("Others")] = "#555555"
+    if "Cash" in tickers:
+        colors[tickers.index("Cash")] = "#888888"
 
     fig = go.Figure(
         data=[
@@ -727,8 +758,10 @@ def _chart_weight_donut(
                 hole=0.55,
                 marker=dict(colors=colors),
                 textinfo="label+percent",
-                textfont=dict(size=11, color=_TEXT),
+                textposition="outside",
+                textfont=dict(size=10, color=_TEXT),
                 hovertemplate="%{label}: %{value:.4f} (%{percent})<extra></extra>",
+                insidetextorientation="horizontal",
             )
         ]
     )
@@ -737,50 +770,155 @@ def _chart_weight_donut(
         paper_bgcolor=_DARK_BG,
         plot_bgcolor=_DARK_BG,
         font=dict(color=_TEXT),
-        showlegend=True,
-        legend=dict(font=dict(color=_TEXT, size=10)),
-        height=450,
-        margin=dict(t=50, b=20, l=20, r=20),
+        showlegend=False,
+        uniformtext=dict(minsize=8, mode="hide"),
+        height=550,
+        margin=dict(t=50, b=80, l=80, r=80),
     )
     return fig
+
+
+def _detect_decision_quality(decisions: dict[str, Any]) -> list[str]:
+    """Detect quality issues in decisions data.
+
+    Returns:
+        List of warning messages (empty if no issues found).
+    """
+    warnings: list[str] = []
+    decs = decisions.get("decisions", [])
+    meta = decisions.get("metadata", {})
+
+    if not decs:
+        return ["No decisions found."]
+
+    # Staleness check
+    ts_str = decisions.get("timestamp", "")
+    if ts_str:
+        try:
+            ts = datetime.fromisoformat(ts_str)
+            age_hours = (
+                datetime.now(timezone.utc) - ts
+            ).total_seconds() / 3600
+            if age_hours > 24:
+                warnings.append(
+                    f"Decisions are **{age_hours:.0f}h old** "
+                    f"(generated {ts_str[:16]}). Re-run `make decide`."
+                )
+        except (ValueError, TypeError):
+            pass
+
+    # All same action
+    actions = {d["action"] for d in decs}
+    if len(actions) == 1:
+        warnings.append(
+            f"All {len(decs)} tickers classified as **{actions.pop()}** "
+            f"-- no differentiation."
+        )
+
+    # All same confidence (fallback mode)
+    confs = {d["confidence"] for d in decs}
+    if len(confs) == 1:
+        warnings.append(
+            f"All confidences identical ({confs.pop():.2f}) "
+            f"-- debate likely failed with no PatchTST fallback."
+        )
+
+    # Confidence source
+    source = meta.get("confidence_source", "")
+    if source in ("none", ""):
+        warnings.append(
+            "Confidence source: **none** -- "
+            "no debate or PatchTST signal used."
+        )
+
+    # Schema version mismatch
+    schema = meta.get("schema_version", "")
+    if schema and schema != _EXPECTED_SCHEMA_VERSION:
+        warnings.append(
+            f"Old schema version ({schema}). "
+            f"Re-run `make decide` to update."
+        )
+
+    # HRP config validation against CPCV-OOS validated params
+    hrp_cfg = meta.get("hrp_config", {})
+    if hrp_cfg:
+        linkage = hrp_cfg.get("linkage_method", "")
+        shrinkage = hrp_cfg.get("shrinkage", None)
+        if linkage and linkage != "ward":
+            warnings.append(
+                f"HRP linkage is **{linkage}** "
+                f"(validated: ward). Weights may be suboptimal."
+            )
+        if shrinkage is not True:
+            warnings.append(
+                "HRP shrinkage **disabled** "
+                "(validated: Ledoit-Wolf). Covariance may be noisy."
+            )
+
+    # Max-weight violations
+    hrp_weights = decisions.get("hrp_final_weights", {})
+    max_w = hrp_cfg.get("max_weight", 0.25)
+    violations = [t for t, w in hrp_weights.items() if w > max_w + 1e-6]
+    if violations:
+        warnings.append(
+            f"**{len(violations)} tickers** exceed max_weight "
+            f"({max_w:.4f}). Re-run `make decide` to fix."
+        )
+
+    return warnings
 
 
 def _render_metric_cards(decisions: dict[str, Any]) -> None:
     """Render KPI metric cards."""
     decs = decisions.get("decisions", [])
+    meta = decisions.get("metadata", {})
+    n_total = len(decs)
     n_buy = sum(1 for d in decs if d["action"] == "BUY")
     n_hold = sum(1 for d in decs if d["action"] == "HOLD")
     n_sell = sum(1 for d in decs if d["action"] == "SELL")
     avg_conf = (
         sum(d["confidence"] for d in decs) / len(decs) if decs else 0.0
     )
-    n_obs = decisions.get("metadata", {}).get("n_observations", "N/A")
+    source = meta.get("confidence_source", "N/A")
+    invested = meta.get("invested_fraction", 1.0)
 
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("BUY", n_buy)
-    col2.metric("HOLD", n_hold)
-    col3.metric("SELL", n_sell)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1.metric("BUY", f"{n_buy}/{n_total}")
+    col2.metric("HOLD", f"{n_hold}/{n_total}")
+    col3.metric("SELL", f"{n_sell}/{n_total}")
     col4.metric("Avg Confidence", f"{avg_conf:.2f}")
-    col5.metric("Observations", n_obs)
+    col5.metric("Invested", f"{invested:.1%}")
+    col6.metric("Signal Source", source)
 
 
 def _render_decision_table(decisions: dict[str, Any]) -> None:
-    """Render per-ticker decision table."""
+    """Render per-ticker decision table with action filter."""
     decs = decisions.get("decisions", [])
     if not decs:
         st.info("No decisions available.")
         return
 
-    # Build table data
+    # Action filter
+    actions_present = sorted({d["action"] for d in decs})
+    selected_actions = st.multiselect(
+        "Filter by action",
+        actions_present,
+        default=actions_present,
+        key="perf_action_filter",
+    )
+
+    filtered = [d for d in decs if d["action"] in selected_actions]
+    sorted_decs = sorted(filtered, key=lambda d: d["weight"], reverse=True)
+
+    # Summary table
     rows = []
-    for d in decs:
+    for d in sorted_decs:
         rows.append(
             {
                 "Ticker": d["ticker"],
                 "Action": d["action"],
                 "Weight": f"{d['weight']:.4f}",
                 "Confidence": f"{d['confidence']:.2f}",
-                "Reasoning": d.get("reasoning", "")[:120] + "...",
             }
         )
 
@@ -790,22 +928,43 @@ def _render_decision_table(decisions: dict[str, Any]) -> None:
         hide_index=True,
     )
 
+    # Full reasoning in expander
+    has_reasoning = any(d.get("reasoning") for d in sorted_decs)
+    if has_reasoning:
+        with st.expander("Reasoning details", expanded=False):
+            for d in sorted_decs:
+                reasoning = d.get("reasoning", "")
+                if reasoning:
+                    color = ACTION_COLORS.get(d["action"], "#888")
+                    st.markdown(
+                        f"**<span style='color:{color};'>"
+                        f"{d['ticker']}</span>** ({d['action']}): "
+                        f"{reasoning}",
+                        unsafe_allow_html=True,
+                    )
+
 
 def _chart_weight_comparison(
     raw: dict[str, float],
     final: dict[str, float],
-    top_n: int = 20,
+    top_n: int = 15,
 ) -> go.Figure:
-    """Bar chart comparing raw vs tilted HRP weights (top N tickers).
+    """Bar chart comparing raw vs final HRP weights (top N tickers).
 
     Args:
         raw: Raw HRP weights.
-        final: Tilted/final weights.
+        final: Final weights (after 3-tier adjustment).
         top_n: Number of top tickers to display.
     """
     # Sort by final weight descending, show top_n
     sorted_tickers = sorted(final.keys(), key=lambda t: final[t], reverse=True)
     tickers = sorted_tickers[:top_n]
+
+    # Detect if tilt was actually applied
+    no_tilt = all(
+        abs(raw.get(t, 0) - final.get(t, 0)) < 1e-6
+        for t in tickers
+    )
 
     fig = go.Figure()
     fig.add_trace(
@@ -817,21 +976,24 @@ def _chart_weight_comparison(
             opacity=0.6,
         )
     )
-    fig.add_trace(
-        go.Bar(
-            name="After Tilt",
-            x=tickers,
-            y=[final.get(t, 0) for t in tickers],
-            marker_color=_ACCENT_GREEN,
+    if not no_tilt:
+        fig.add_trace(
+            go.Bar(
+                name="After Tilt",
+                x=tickers,
+                y=[final.get(t, 0) for t in tickers],
+                marker_color=_ACCENT_GREEN,
+            )
         )
-    )
 
     subtitle = f" (Top {top_n})" if len(sorted_tickers) > top_n else ""
+    title = (
+        f"HRP Weights{subtitle} (no adjustments)"
+        if no_tilt
+        else f"Raw vs Final Weights{subtitle}"
+    )
     fig.update_layout(
-        title=dict(
-            text=f"Raw vs Confidence-Tilted Weights{subtitle}",
-            font=dict(size=16, color=_TEXT),
-        ),
+        title=dict(text=title, font=dict(size=16, color=_TEXT)),
         barmode="group",
         paper_bgcolor=_DARK_BG,
         plot_bgcolor=_DARK_BG,
@@ -842,6 +1004,209 @@ def _chart_weight_comparison(
         margin=dict(t=50, b=80, l=50, r=20),
     )
     return fig
+
+
+def _render_concentration_metrics(weights: dict[str, float]) -> None:
+    """Render portfolio concentration risk metrics.
+
+    Args:
+        weights: ``{ticker: weight}`` mapping.
+    """
+    active = {t: w for t, w in weights.items() if w > _MIN_DISPLAY_WEIGHT}
+    if not active:
+        return
+
+    n_active = len(active)
+    values = sorted(active.values(), reverse=True)
+    hhi = sum(w ** 2 for w in values)
+    eff_n = 1.0 / hhi if hhi > 0 else 0.0
+    top5 = sum(values[:5])
+    max_ticker = max(active, key=lambda t: active[t])
+    max_weight = active[max_ticker]
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Active Positions", n_active)
+    col2.metric("Effective N", f"{eff_n:.1f}")
+    col3.metric("Top-5 Weight", f"{top5:.1%}")
+    col4.metric(f"Max ({max_ticker})", f"{max_weight:.2%}")
+
+    # Concentration warnings
+    equal_weight = 1.0 / n_active if n_active > 0 else 0.0
+    concentrated = [
+        t for t, w in active.items() if w > 2.0 * equal_weight
+    ]
+    if concentrated:
+        st.warning(
+            f"**{len(concentrated)} tickers** exceed 2x equal-weight "
+            f"({2.0 * equal_weight:.2%}): "
+            f"{', '.join(sorted(concentrated)[:5])}"
+            f"{'...' if len(concentrated) > 5 else ''}"
+        )
+    if top5 > 0.50 and n_active >= 10:
+        st.warning(
+            f"Top-5 concentration is **{top5:.1%}** — "
+            f"more than half the portfolio in 5 assets."
+        )
+
+
+def _chart_confidence_histogram(
+    decisions: dict[str, Any],
+) -> go.Figure | None:
+    """Plotly histogram of confidence scores grouped by action.
+
+    Args:
+        decisions: Full decisions.json dict.
+
+    Returns:
+        Plotly figure or None if no decisions.
+    """
+    decs = decisions.get("decisions", [])
+    if not decs:
+        return None
+
+    fig = go.Figure()
+    for action, color in (
+        ("BUY", _ACCENT_GREEN),
+        ("HOLD", _ACCENT_GOLD),
+        ("SELL", _ACCENT_RED),
+    ):
+        confs = [d["confidence"] for d in decs if d["action"] == action]
+        if confs:
+            fig.add_trace(go.Histogram(
+                x=confs, name=action, marker_color=color,
+                opacity=0.7, nbinsx=20,
+            ))
+
+    # Auto-scale x-axis to data range with small padding
+    all_confs = [d["confidence"] for d in decs]
+    c_min, c_max = min(all_confs), max(all_confs)
+    pad = max((c_max - c_min) * 0.15, 0.01)
+
+    fig.update_layout(
+        title=dict(
+            text="Confidence Distribution", font=dict(size=16, color=_TEXT),
+        ),
+        barmode="stack",
+        xaxis=dict(
+            title="Confidence",
+            range=[c_min - pad, c_max + pad],
+            gridcolor="#333",
+        ),
+        yaxis=dict(title="Count", gridcolor="#333"),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        legend=dict(font=dict(color=_TEXT)),
+        height=300,
+        margin=dict(t=50, b=40, l=50, r=20),
+    )
+    return fig
+
+
+def _chart_action_distribution(
+    decisions: dict[str, Any],
+) -> go.Figure | None:
+    """Plotly donut chart of BUY/HOLD/SELL action counts.
+
+    Args:
+        decisions: Full decisions.json dict.
+
+    Returns:
+        Plotly figure or None if no decisions.
+    """
+    decs = decisions.get("decisions", [])
+    if not decs:
+        return None
+
+    counts: dict[str, int] = {"BUY": 0, "HOLD": 0, "SELL": 0}
+    for d in decs:
+        action = d.get("action", "")
+        if action in counts:
+            counts[action] += 1
+
+    labels = [a for a, c in counts.items() if c > 0]
+    values = [counts[a] for a in labels]
+    colors = [ACTION_COLORS.get(a, "#888") for a in labels]
+
+    fig = go.Figure(data=[go.Pie(
+        labels=labels, values=values, hole=0.55,
+        marker=dict(colors=colors),
+        textinfo="label+value",
+        textfont=dict(size=12, color=_TEXT),
+        hovertemplate="%{label}: %{value} (%{percent})<extra></extra>",
+    )])
+    fig.update_layout(
+        title=dict(
+            text="Action Distribution", font=dict(size=16, color=_TEXT),
+        ),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        showlegend=False,
+        height=300,
+        margin=dict(t=50, b=20, l=20, r=20),
+    )
+    return fig
+
+
+def _render_weight_delta(
+    current_weights: dict[str, float],
+    bench_weights_df: Any,
+) -> None:
+    """Show weight changes between current decisions and last benchmark rebalance.
+
+    Args:
+        current_weights: Current portfolio weights from decisions.json.
+        bench_weights_df: Polars DataFrame from benchmark_weights.parquet.
+    """
+    import polars as pl
+
+    latest_date = bench_weights_df["date"].max()
+    prev = {
+        r["ticker"]: r["weight"]
+        for r in bench_weights_df.filter(
+            pl.col("date") == latest_date
+        ).select(["ticker", "weight"]).to_dicts()
+    }
+
+    all_tickers = set(current_weights) | set(prev)
+    deltas = []
+    for t in all_tickers:
+        curr = current_weights.get(t, 0.0)
+        old = prev.get(t, 0.0)
+        delta = curr - old
+        if abs(delta) > 1e-6:
+            deltas.append({
+                "ticker": t, "current": curr,
+                "previous": old, "delta": delta,
+            })
+
+    if not deltas:
+        st.info("No weight changes from last benchmark rebalance.")
+        return
+
+    deltas.sort(key=lambda x: abs(x["delta"]), reverse=True)
+
+    entered = [d for d in deltas if d["previous"] < _MIN_DISPLAY_WEIGHT and d["current"] > _MIN_DISPLAY_WEIGHT]
+    exited = [d for d in deltas if d["current"] < _MIN_DISPLAY_WEIGHT and d["previous"] > _MIN_DISPLAY_WEIGHT]
+    turnover = sum(abs(d["delta"]) for d in deltas) / 2
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("New Positions", len(entered))
+    col2.metric("Exited", len(exited))
+    col3.metric("Est. Turnover", f"{turnover:.1%}")
+
+    st.caption(f"vs benchmark rebalance {latest_date}")
+    rows = [
+        {
+            "Ticker": d["ticker"],
+            "Previous": f"{d['previous']:.4f}",
+            "Current": f"{d['current']:.4f}",
+            "Delta": f"{d['delta']:+.4f}",
+        }
+        for d in deltas[:15]
+    ]
+    st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
 def tab_performance(
@@ -856,16 +1221,42 @@ def tab_performance(
     """
     st.header("Portfolio Performance")
 
+    # --- Benchmark metrics (always shown when available) ---
+    if bench_metrics:
+        st.caption("Walk-Forward Backtest Results")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Sharpe", f"{bench_metrics.get('sharpe_ratio', 0):.3f}")
+        col2.metric("CAGR", f"{bench_metrics.get('cagr', 0):.2%}")
+        col3.metric("Max DD", f"{bench_metrics.get('max_drawdown', 0):.2%}")
+        col4.metric("Positions", f"{bench_metrics.get('avg_positions', 0):.0f}")
+
     # --- Determine data source ---
     has_decisions = decisions is not None and decisions.get("decisions")
     has_bench = bench_weights is not None
 
     if has_decisions:
+        # Quality warnings
+        quality_warnings = _detect_decision_quality(decisions)
+        if quality_warnings:
+            with st.expander(
+                f"Data Quality Issues ({len(quality_warnings)})",
+                expanded=True,
+            ):
+                for w in quality_warnings:
+                    st.warning(w)
+
         ts = decisions.get("timestamp", "N/A")
-        st.caption(f"Last agent decision: {ts}")
+        meta = decisions.get("metadata", {})
+        invested_frac = meta.get("invested_fraction", 1.0)
+        caption = f"Last agent decision: {ts}"
+        if invested_frac < 1.0 - 1e-6:
+            caption += f"  |  Invested: {invested_frac:.1%}  |  Cash: {1.0 - invested_frac:.1%}"
+        st.caption(caption)
         _render_metric_cards(decisions)
 
-        weights_final = decisions.get("hrp_final_weights", {})
+        # Use per-decision weights (actual allocation after 3-tier adjustment)
+        decs = decisions.get("decisions", [])
+        weights_final = {d["ticker"]: d["weight"] for d in decs}
         weights_raw = decisions.get("hrp_raw_weights", {})
     elif has_bench:
         st.info(
@@ -881,13 +1272,10 @@ def tab_performance(
         )
         return
 
-    # --- Metric summary from benchmark ---
-    if bench_metrics and not has_decisions:
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Sharpe", f"{bench_metrics.get('sharpe_ratio', 0):.3f}")
-        col2.metric("CAGR", f"{bench_metrics.get('cagr', 0):.2%}")
-        col3.metric("Max DD", f"{bench_metrics.get('max_drawdown', 0):.2%}")
-        col4.metric("Positions", f"{bench_metrics.get('avg_positions', 0):.0f}")
+    # --- Concentration metrics ---
+    st.divider()
+    st.subheader("Concentration Risk")
+    _render_concentration_metrics(weights_final)
 
     # --- Charts side by side ---
     col_left, col_right = st.columns(2)
@@ -901,6 +1289,27 @@ def tab_performance(
             use_container_width=True,
         )
 
+    # --- Confidence distribution + action breakdown ---
+    if has_decisions:
+        fig_conf = _chart_confidence_histogram(decisions)
+        fig_action = _chart_action_distribution(decisions)
+        if fig_conf or fig_action:
+            col_conf, col_action = st.columns([3, 1])
+            if fig_conf:
+                with col_conf:
+                    st.plotly_chart(fig_conf, use_container_width=True)
+            if fig_action:
+                with col_action:
+                    st.plotly_chart(fig_action, use_container_width=True)
+
+    st.divider()
+
+    # --- Weight delta vs benchmark ---
+    if has_decisions and has_bench:
+        st.subheader("Weight Changes vs Last Rebalance")
+        _render_weight_delta(weights_final, bench_weights)
+        st.divider()
+
     # --- Decision table ---
     if has_decisions:
         st.subheader("Decisions")
@@ -908,8 +1317,12 @@ def tab_performance(
         cluster = decisions.get("cluster_order", [])
         if cluster:
             st.caption(f"HRP Cluster Order: {' → '.join(cluster)}")
-    elif has_bench:
-        st.subheader("Latest Benchmark Weights")
+
+    # --- Benchmark weights (always shown when available) ---
+    if has_bench:
+        if has_decisions:
+            st.divider()
+        st.subheader("Latest Benchmark Weights (Walk-Forward)")
         _render_benchmark_weight_table(bench_weights)
 
 
@@ -1451,7 +1864,6 @@ def _chart_ticker_weight_history(
 
 def _chart_ticker_cumulative_return(
     equity_df: Any,
-    weights_df: Any,
     ticker: str,
 ) -> go.Figure | None:
     """Line chart of a ticker's cumulative return vs portfolio vs benchmark."""
@@ -1594,7 +2006,7 @@ def tab_microstructure(
     # --- Portfolio vs benchmark cumulative return ---
     if bench_equity is not None:
         fig_cr = _chart_ticker_cumulative_return(
-            bench_equity, bench_weights, selected
+            bench_equity, selected
         )
         if fig_cr:
             st.plotly_chart(fig_cr, use_container_width=True)

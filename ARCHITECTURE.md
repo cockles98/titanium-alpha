@@ -11,7 +11,7 @@ Titanium Alpha is an agentic multi-strategy hedge fund system that transforms ra
 ```mermaid
 flowchart TD
     subgraph Sources["Data Sources"]
-        YF["Yahoo Finance<br/>(OHLCV, 5 years)"]
+        YF["Yahoo Finance<br/>(OHLCV, 12 years)"]
         RSS["RSS Feeds<br/>(Yahoo, Google, CNBC)"]
         NEWS_API["NewsAPI<br/>(optional)"]
     end
@@ -38,7 +38,7 @@ flowchart TD
 
     subgraph Portfolio["Portfolio Optimization"]
         HRP["HRP Optimizer<br/>(Lopez de Prado, 2016)<br/>Cov -> Distance -> Cluster<br/>-> Bisection -> Tilt"]
-        MERGE["Merge Actions<br/>HOLD/SELL -> weight=0<br/>BUY reescaled to sum=1"]
+        MERGE["Merge Actions<br/>BUY=HRP, HOLD=HRP*conf,<br/>SELL=0, cash implicit"]
     end
 
     subgraph Validation["Backtesting"]
@@ -200,7 +200,7 @@ flowchart TD
 | | |
 |---|---|
 | **Classes/Functions** | `CPCVBacktester`, `TransactionCosts`, `FoldResult`, `BacktestResult`, `ModelFactory` (Protocol) |
-| **Responsibilities** | Implements Combinatorial Purged Cross-Validation (Lopez de Prado). Generates `C(n_splits, n_test_groups)` train/test paths (default: C(6,2) = 15 paths). Each path applies purging (removes `h + input_size - 1 = 64` days before test), embargo (10 days after test), and evaluates a long/flat strategy on non-overlapping h-day returns. Optional `TransactionCosts` with slippage, commission, and volume-dependent market impact (`1/sqrt(relative_volume)`). Metrics: annualized Sharpe (rf=0.05), max drawdown, CAGR. |
+| **Responsibilities** | Implements Combinatorial Purged Cross-Validation (Lopez de Prado). Generates `C(n_splits, n_test_groups)` train/test paths (default: C(6,2) = 15 paths). Each path applies purging (removes `h + input_size - 1 = 64` days before test), embargo (10 days after test), and evaluates a long/flat strategy on non-overlapping h-day returns. Flat positions earn the risk-free rate (geometric conversion). Forced exit cost charged at block end. Optional `TransactionCosts` with slippage, commission, and volume-dependent market impact (`1/sqrt(relative_volume)`). Metrics: annualized Sharpe (rf=0.05, geometric), max drawdown, CAGR. |
 | **Dependencies** | None (no imports from `src/`) |
 
 ---
@@ -220,7 +220,7 @@ flowchart TD
 | | |
 |---|---|
 | **Classes/Functions** | `HRPOptimizer`, `HRPConfig`, `HRPResult` |
-| **Responsibilities** | Implements the HRP algorithm (Lopez de Prado, 2016). Pipeline: covariance matrix -> correlation distance (`d = sqrt(0.5 * (1 - corr))`) -> hierarchical clustering (scipy linkage) -> quasi-diagonalization (recursive dendrogram traversal) -> recursive bisection (inverse variance weighting). Optional confidence tilt: `multiplier = 1 + cap * (confidence - 0.5)`, capped at +/-10% at default settings. Always clips to `[min_weight, max_weight]` and renormalizes. Accepts Polars DataFrames; converts to numpy internally. |
+| **Responsibilities** | Implements the HRP algorithm (Lopez de Prado, 2016). Pipeline: covariance matrix -> correlation distance (`d = sqrt(0.5 * (1 - corr))`) -> hierarchical clustering (scipy linkage) -> quasi-diagonalization (recursive dendrogram traversal) -> recursive bisection (inverse variance weighting). Sum-preserving confidence tilt uses weighted-mean as neutral point (`multiplier = 1 + cap * (confidence - wmean)`). Constraints enforced via waterfilling algorithm with turnover latching (`turnover_threshold=0.02`), dynamic bounds, and iterative redistribution. Accepts `previous_weights` for turnover-aware rebalancing. Polars DataFrames converted to numpy internally. |
 | **Dependencies** | None (no imports from `src/`) |
 
 ---
@@ -230,7 +230,7 @@ flowchart TD
 | | |
 |---|---|
 | **Classes/Functions** | `DecisionEngine`, `TickerDecision`, `DecisionOutput` |
-| **Responsibilities** | Top-level orchestrator. Pipeline: (1) load OHLCV from PostgreSQL, (2) compute log returns and pivot to wide format, (3) run LangGraph agent debate with graceful degradation, (4) extract confidence scores, (5) run HRP optimizer with confidence tilt, (6) merge agent actions with HRP weights (HOLD/SELL -> weight=0, BUY reescaled), (7) save to `decisions.json` and `debate_history.json`. Uses 504-day lookback (~2 years) for covariance estimation. |
+| **Responsibilities** | Top-level orchestrator. 10-step pipeline: (1) load OHLCV, (2) compute log returns, (3) agent debate, (4) load PatchTST predictions as fallback, (5) extract confidences (debate + fallback), (6) classify tickers (BUY/HOLD/SELL), (7) filter to investable subset (BUY+HOLD), (8) run HRP on subset, (9) HOLD scaling (weight * confidence) + max_weight enforcement, (10) merge + save. Three-tier model: BUY=HRP weight, HOLD=HRP*confidence (reduced), SELL=0. `sum(weights) <= 1.0` with implicit cash. Metadata v1.1 includes `invested_fraction`, `confidence_source`, `n_buy/n_hold/n_sell`. |
 | **Dependencies** | `src.agents.state`, `src.portfolio.hrp`, `src.agents.graph` (lazy), `src.models.predict` (lazy), `src.utils.db` (lazy) |
 
 ---
@@ -289,13 +289,13 @@ sequenceDiagram
 | **Single linkage for HRP clustering** | Faithful to Lopez de Prado's original 2016 paper. Single linkage produces elongated clusters that respect the correlation distance topology. | Ward (more balanced clusters but departs from the original method); complete linkage (conservative merging). |
 | **Flat file dashboard (no DB in UI)** | The dashboard reads `decisions.json`, `debate_history.json`, and Parquet files. This decouples the UI from infrastructure -- the dashboard works offline, in CI screenshots, and without Docker running. | Direct PostgreSQL queries (adds infrastructure dependency); API layer (over-engineering for a single-user tool). |
 | **Log returns for covariance estimation** | Log returns are additive over time and approximately normally distributed, making them suitable for covariance matrix estimation and HRP's distance metric. | Simple returns (non-additive, skewed); excess returns (requires benchmark alignment). |
-| **Confidence tilt cap at 20%** | The effective weight adjustment range is [0.90, 1.10], preventing any single agent opinion from dominating HRP's risk-based allocation. The cap is configurable via `HRPConfig`. | No tilt (ignores agent signal); uncapped tilt (agent overrides risk model); binary override (all-or-nothing). |
+| **Sum-preserving confidence tilt** | Tilt uses the weighted-mean confidence as neutral point, ensuring `sum(tilted) == sum(raw)` exactly. Cap at 20% limits individual adjustments while preserving total allocation. Combined with waterfilling constraint optimizer that enforces min/max weight with turnover latching. | Fixed 0.5 neutral (biased when all agents agree); uncapped tilt (agent overrides risk model); clip-and-renormalise (doesn't preserve sum). |
 
 ---
 
 ## Testing Strategy
 
-**Scale**: 503 tests across 15 test modules, executing in under 20 seconds.
+**Scale**: 750+ tests across 15+ test modules.
 
 ### Test Layers
 

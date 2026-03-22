@@ -213,6 +213,9 @@ def volume_profile(ohlcv_df: pl.DataFrame) -> pl.DataFrame:
 def compute_all_features(ohlcv_df: pl.DataFrame) -> pl.DataFrame:
     """Compute all technical features and concatenate with the original data.
 
+    Each ticker is processed independently to prevent rolling windows
+    and cumulative indicators (VWAP, OBV) from crossing ticker boundaries.
+
     Args:
         ohlcv_df: OHLCV DataFrame (must contain date, ticker, open, high,
             low, close, volume columns).
@@ -223,27 +226,34 @@ def compute_all_features(ohlcv_df: pl.DataFrame) -> pl.DataFrame:
     """
     _validate_ohlcv(ohlcv_df)
 
-    close = ohlcv_df["close"].cast(pl.Float64)
+    frames: list[pl.DataFrame] = []
+    for ticker in ohlcv_df["ticker"].unique().sort().to_list():
+        ticker_df = ohlcv_df.filter(pl.col("ticker") == ticker).sort("date")
+        close = ticker_df["close"].cast(pl.Float64)
 
-    rsi_s = rsi(close)
-    bb_df = bollinger_bands(close)
-    rvol_s = realized_volatility(close)
-    vp_df = volume_profile(ohlcv_df)
+        rsi_s = rsi(close)
+        bb_df = bollinger_bands(close)
+        rvol_s = realized_volatility(close)
+        vp_df = volume_profile(ticker_df)
 
-    result = pl.concat(
-        [
-            ohlcv_df,
-            rsi_s.to_frame(),
-            bb_df,
-            rvol_s.to_frame(),
-            vp_df,
-        ],
-        how="horizontal",
-    )
+        ticker_result = pl.concat(
+            [
+                ticker_df,
+                rsi_s.to_frame(),
+                bb_df,
+                rvol_s.to_frame(),
+                vp_df,
+            ],
+            how="horizontal",
+        )
+        frames.append(ticker_result)
+
+    result = pl.concat(frames)
 
     logger.info(
-        "compute_all_features: {} rows × {} cols",
+        "compute_all_features: {} rows × {} cols | {} tickers",
         result.height,
         result.width,
+        len(frames),
     )
     return result

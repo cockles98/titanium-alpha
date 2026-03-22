@@ -475,6 +475,9 @@ class WalkForwardBacktester:
         if model_factory is None:
             model_factory = NaiveModelFactory()
 
+        # Remove duplicatas preservando a ordem
+        tickers = list(dict.fromkeys(tickers))
+
         # ---- Prepare daily returns (wide) for all tickers + benchmark
         all_tickers = list(set(tickers) | {benchmark_ticker})
         returns_wide = self._compute_daily_returns(ohlcv, all_tickers)
@@ -513,15 +516,12 @@ class WalkForwardBacktester:
         )
 
         # ---- State variables
-        # Track per-asset dollar values (weight drift between rebalances)
-        equal_w = 1.0 / len(available_tickers)
+        # Inicialização institucional: Fundo nasce 100% em caixa.
+        # O primeiro rebalanceamento pagará o custo total de montagem da carteira.
         holdings: dict[str, float] = {
-            t: cfg.initial_capital * equal_w for t in available_tickers
+            t: 0.0 for t in available_tickers
         }
-
-        # CORREÇÃO: Inicialização explícita do caixa antes do loop principal
-        cash = 0.0
-
+        cash = cfg.initial_capital
         portfolio_value = cfg.initial_capital
         benchmark_value = cfg.initial_capital
 
@@ -623,10 +623,10 @@ class WalkForwardBacktester:
                     hrp_result = optimizer.optimize(
                         log_returns, confidences=confidences
                     )
-                    new_weights = hrp_result.weights
+                    raw_weights = hrp_result.weights
                 else:
                     # Fallback: equal weight
-                    new_weights = {
+                    raw_weights = {
                         t: 1.0 / len(available_tickers)
                         for t in available_tickers
                     }
@@ -634,6 +634,35 @@ class WalkForwardBacktester:
                         "Insufficient data for HRP on {}; using equal weights",
                         current_date,
                     )
+
+                # -- Volatility targeting (Ex-Ante Risk of target allocation)
+                leverage = 1.0
+                if cfg.target_vol is not None and log_returns.height >= cfg.vol_lookback:
+                    # Utiliza os retornos simples já calculados para a simulação exata
+                    recent_simple_rets = returns_wide.filter(
+                        pl.col("date") <= decision_date
+                    ).tail(cfg.vol_lookback)
+                    
+                    simulated_port_rets = []
+                    for row_dict in recent_simple_rets.iter_rows(named=True):
+                        # Pondera os retornos discretos/simples
+                        day_ret = sum(row_dict.get(t, 0.0) * w for t, w in raw_weights.items())
+                        simulated_port_rets.append(day_ret)
+                    
+                    n_rets = len(simulated_port_rets)
+                    mean_ret = sum(simulated_port_rets) / n_rets
+                    var = sum((r - mean_ret) ** 2 for r in simulated_port_rets) / (n_rets - 1)
+                    ex_ante_vol = math.sqrt(var) * math.sqrt(cfg.trading_days_per_year)
+
+                    if ex_ante_vol > 0:
+                        raw_leverage = cfg.target_vol / ex_ante_vol
+                        leverage = max(
+                            cfg.min_leverage,
+                            min(cfg.max_leverage, raw_leverage),
+                        )
+                
+                # Apply leverage to raw HRP weights (sum will now equal leverage, not 1.0)
+                new_weights = {t: w * leverage for t, w in raw_weights.items()}
 
                 # Effective weights from current holdings (drift-adjusted)
                 effective_weights = {
@@ -687,58 +716,15 @@ class WalkForwardBacktester:
                         dollar_cost,
                     )
 
-            if not rebalanced:
-                days_since_rebalance += 1
-
-            # -- Volatility targeting (scale exposure before returns)
-            #
-            # When target_vol is set, we compute the realised vol over
-            # the trailing vol_lookback days and adjust exposure so that
-            # the portfolio's expected vol matches target_vol.
-            #
-            # Cash carry: positive cash (leverage < 1) earns rf pro-rata.
-            # Negative cash (leverage > 1 = margin) costs (rf + spread)
-            # pro-rata.  When killswitch is active, full value earns rf.
-            #
-            # Skip when in_cash (killswitch active — all holdings are 0).
-            #cash = 0.0
-            if (
-                not in_cash
-                and cfg.target_vol is not None
-                and len(returns_port) >= cfg.vol_lookback
-            ):
-                recent_rets = returns_port[-cfg.vol_lookback:]
-                n_rets = len(recent_rets)
-                mean_ret = sum(recent_rets) / n_rets
-                var = sum((r - mean_ret) ** 2 for r in recent_rets) / (
-                    n_rets - 1
-                )
-                realized_vol = math.sqrt(var) * math.sqrt(
-                    cfg.trading_days_per_year
-                )
-
-                if realized_vol > 0:
-                    raw_leverage = cfg.target_vol / realized_vol
-                    leverage = max(
-                        cfg.min_leverage,
-                        min(cfg.max_leverage, raw_leverage),
-                    )
-
-                    # Scale all holdings proportionally; excess → cash
-                    invested = sum(holdings.values())
-                    if invested > 0:
-                        scale = leverage * portfolio_value / invested
-                        for t in available_tickers:
-                            holdings[t] *= scale
-                        cash = portfolio_value - sum(holdings.values())
+            days_since_rebalance += 1
 
             # -- Compute daily returns (drift-adjusted holdings)
             row = returns_wide.row(row_idx, named=True)
             bench_ret = row.get(benchmark_ticker, 0.0)
             benchmark_value *= (1.0 + bench_ret)
 
-            # Daily risk-free rate for cash carry / margin cost
-            daily_rf = cfg.rf / cfg.trading_days_per_year
+            # Daily risk-free rate for cash carry / margin cost (Geometric compounding)
+            daily_rf = (1.0 + cfg.rf) ** (1.0 / cfg.trading_days_per_year) - 1.0
 
             if in_cash:
                 # Killswitch active: full portfolio parked in cash, earns rf
@@ -755,13 +741,23 @@ class WalkForwardBacktester:
                 if cash >= 0:
                     cash *= (1.0 + daily_rf)
                 else:
-                    daily_borrow = (
-                        (cfg.rf + cfg.margin_spread)
-                        / cfg.trading_days_per_year
-                    )
+                    annual_borrow_rate = cfg.rf + cfg.margin_spread
+                    daily_borrow = (1.0 + annual_borrow_rate) ** (1.0 / cfg.trading_days_per_year) - 1.0
                     cash *= (1.0 + daily_borrow)
 
                 portfolio_value = sum(holdings.values()) + cash
+
+            # Safeguard de Ruína Matemática
+            if portfolio_value <= 0:
+                logger.error("BANKRUPTCY TRIGERRED no dia {}. Capital atingiu <= 0.", current_date)
+                portfolio_value = 0.0
+                port_ret = -1.0
+                equity_dates.append(current_date)
+                equity_portfolio.append(0.0)
+                equity_benchmark.append(benchmark_value)
+                returns_port.append(port_ret)
+                returns_bench.append(bench_ret)
+                break # Encerra o backtest imediatamente
 
             # -- Drawdown killswitch (after returns are applied)
             if cfg.killswitch is not None:
@@ -784,6 +780,7 @@ class WalkForwardBacktester:
                     )
                     portfolio_value -= exit_cost
                     holdings = {t: 0.0 for t in available_tickers}
+                    cash = portfolio_value
                     in_cash = True
                     days_recovering = 0
                     logger.warning(

@@ -208,7 +208,11 @@ class _PatchTSTModelFactory:
             return {t: 0.5 for t in tickers}
 
         proba = self._forecaster.predict_proba(df)
-        return proba
+        # predict_proba returns a DataFrame; convert to {ticker: prob_up} dict
+        return dict(zip(
+            proba["ticker"].to_list(),
+            proba["prob_up"].to_list(),
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +284,7 @@ def run_us_benchmark(
     config_path: str = "config/tickers.json",
     output_dir: str = "data/outputs",
     use_patchtst: bool = True,
-    n_years: int = 10,
+    n_years: int = 30,
     ohlcv: pl.DataFrame | None = None,
 ) -> WalkForwardResult:
     """Run the full US benchmark pipeline.
@@ -337,20 +341,24 @@ def run_us_benchmark(
 
     # Step 5: Walk-forward backtest
     logger.info("Step 5/7: Running walk-forward backtest")
+    n = len(tickers)
     wf_config = WalkForwardConfig(
-        rebalance_every=5,             # Semanal (baseline)
+        rebalance_every=13,            # ~2.5 weeks (CPCV-OOS validated)
         retrain_every=126,             # Semestral
-        lookback_days=504,             # ~2 anos de dados (baseline)
+        lookback_days=756,             # ~3 anos de covariância (CPCV-OOS validated)
         initial_capital=1_000_000.0,
         costs=TransactionCosts(
             slippage_bps=5.0,
             commission_bps=10.0,
         ),
-        min_rebalance_delta=0.02,      # 2% threshold (baseline)
+        min_rebalance_delta=0.02,      # 2% threshold
         trading_days_per_year=trading_days,
         rf=rf,
-        # target_vol=None → sem vol targeting (baseline)
-        # hrp_config=None → usa default dinâmico min(0.25, 2/n)
+        hrp_config=HRPConfig(
+            linkage_method="ward",     # CPCV-OOS validated (+0.03 vs single)
+            shrinkage=True,            # Ledoit-Wolf (CPCV-OOS validated +0.03)
+            max_weight=min(0.25, 2 / n),
+        ),
     )
 
     backtester = WalkForwardBacktester(config=wf_config)

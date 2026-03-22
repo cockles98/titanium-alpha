@@ -626,9 +626,7 @@ class TestOptimize:
         result = opt.optimize(four_asset_returns)
         assert sum(result.weights.values()) == pytest.approx(1.0)
 
-    def test_high_vol_asset_gets_less_weight(
-        self, default_optimizer: HRPOptimizer
-    ) -> None:
+    def test_high_vol_asset_gets_less_weight(self) -> None:
         """Asset with higher variance should get lower weight (HRP property)."""
         np.random.seed(55)
         n = 200
@@ -636,7 +634,9 @@ class TestOptimize:
             "LOW_VOL": (np.random.randn(n) * 0.005).tolist(),
             "HIGH_VOL": (np.random.randn(n) * 0.05).tolist(),
         })
-        result = default_optimizer.optimize(df)
+        # max_weight must be > 1/n for the HRP signal to survive constraints
+        opt = HRPOptimizer(HRPConfig(max_weight=0.90))
+        result = opt.optimize(df)
         assert result.weights["LOW_VOL"] > result.weights["HIGH_VOL"]
 
     def test_confidence_boost_increases_weight(

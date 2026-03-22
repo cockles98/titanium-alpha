@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
+from src.data.ingestion import _resolve_tickers
 from src.models.predict import PredictionPipeline
 
 
@@ -64,7 +65,7 @@ class TestPredictionPipelineInit:
         p = PredictionPipeline()
         assert p.val_size == 63
         assert p.max_steps == 5000
-        assert p.tickers == ["SPY", "NVDA", "AAPL", "QQQ"]
+        assert p.tickers == _resolve_tickers(None)
 
     def test_custom_params(self) -> None:
         engine = MagicMock()
@@ -133,11 +134,11 @@ class TestComputeMetrics:
     """MAE and RMSE computation."""
 
     def test_perfect_forecast(self) -> None:
-        """Zero error when forecast matches actual."""
+        """Zero error when forecast dates match actuals exactly."""
         forecast = pl.DataFrame(
             {
                 "unique_id": ["SPY"] * 5,
-                "ds": list(range(5)),
+                "ds": list(range(5, 10)),
                 "PatchTST-q0.5": [100.0, 101.0, 102.0, 103.0, 104.0],
             }
         )
@@ -153,11 +154,11 @@ class TestComputeMetrics:
         assert result["rmse"][0] == pytest.approx(0.0)
 
     def test_known_error(self) -> None:
-        """MAE and RMSE with known offsets."""
+        """MAE and RMSE with known offsets via date-aligned join."""
         forecast = pl.DataFrame(
             {
                 "unique_id": ["SPY"] * 3,
-                "ds": list(range(3)),
+                "ds": [2, 3, 4],
                 "PatchTST-q0.5": [102.0, 103.0, 104.0],
             }
         )
@@ -169,7 +170,7 @@ class TestComputeMetrics:
             }
         )
         result = PredictionPipeline.compute_metrics(forecast, actual, h=3)
-        # Forecast: [102, 103, 104] vs actual last 3: [100, 101, 102]
+        # Joined on dates 2,3,4: forecast [102,103,104] vs actual [100,101,102]
         # Errors: [2, 2, 2] → MAE=2, RMSE=2
         assert result["mae"][0] == pytest.approx(2.0)
         assert result["rmse"][0] == pytest.approx(2.0)
@@ -191,6 +192,25 @@ class TestComputeMetrics:
         )
         result = PredictionPipeline.compute_metrics(forecast, actual, h=1)
         assert result.height == 2
+
+    def test_no_overlap_returns_empty(self) -> None:
+        """Forecast dates outside actual range → empty metrics (production case)."""
+        forecast = pl.DataFrame(
+            {
+                "unique_id": ["SPY"] * 5,
+                "ds": list(range(100, 105)),
+                "PatchTST-q0.5": [110.0] * 5,
+            }
+        )
+        actual = pl.DataFrame(
+            {
+                "date": list(range(10)),
+                "ticker": ["SPY"] * 10,
+                "close": [100.0] * 10,
+            }
+        )
+        result = PredictionPipeline.compute_metrics(forecast, actual, h=5)
+        assert result.height == 0
 
     def test_missing_median_col(self) -> None:
         """No median column → empty metrics."""

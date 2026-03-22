@@ -1085,8 +1085,8 @@ class TestCostsIntegration:
         total_costs = sum(f.total_costs for f in result.fold_results)
         assert total_costs > 0.0
 
-    def test_always_long_one_trade(self) -> None:
-        """Always positive predictions = 1 trade (flat->long at start) per path."""
+    def test_always_long_two_trades(self) -> None:
+        """Always positive predictions = 2 trades per path (entry + forced exit)."""
         bt = CPCVBacktester(
             n_splits=4, n_test_groups=1, h=2, input_size=5, embargo_days=3,
             costs=TransactionCosts(),
@@ -1094,8 +1094,8 @@ class TestCostsIntegration:
         df = _make_ohlcv_df(500)
         result = bt.run(df, _mock_factory_positive)
         for fold in result.fold_results:
-            # Only one transition: flat(0) -> long(1) at the first return
-            assert fold.n_trades == 1
+            # Two transitions: flat->long at start + forced exit at end of block
+            assert fold.n_trades == 2
 
     def test_always_flat_zero_trades(self) -> None:
         """Always negative predictions = 0 trades (stay flat entire time)."""

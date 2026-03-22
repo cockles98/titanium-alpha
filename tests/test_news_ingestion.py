@@ -83,8 +83,8 @@ class TestMatchTicker:
     def test_match_aapl(self) -> None:
         assert _match_ticker("Tim Cook announces new iPhone", "") == "AAPL"
 
-    def test_match_qqq(self) -> None:
-        assert _match_ticker("", "Nasdaq composite rises") == "QQQ"
+    def test_match_msft(self) -> None:
+        assert _match_ticker("Microsoft Azure revenue grows", "") == "MSFT"
 
     def test_no_match(self) -> None:
         assert _match_ticker("Weather forecast today", "Rain expected") is None
@@ -95,10 +95,29 @@ class TestMatchTicker:
     def test_case_insensitive(self) -> None:
         assert _match_ticker("nvidia stock soars", "") == "NVDA"
 
-    def test_first_match_wins(self) -> None:
-        # SPY keywords checked before NVDA in dict order
+    def test_specific_stock_matches_before_index(self) -> None:
+        # Individual stocks checked before indices, so NVDA matches
+        # before SPY even though both keywords appear.
         result = _match_ticker("S&P 500 and NVIDIA news", "")
-        assert result == "SPY"
+        assert result == "NVDA"
+
+    def test_most_evidence_wins_over_dict_order(self) -> None:
+        """Ticker with the most keyword hits should win regardless of
+        dict insertion order (reduces first-match positional bias)."""
+        # AMZN has 3 keyword hits (Amazon, AWS, Andy Jassy)
+        # AAPL has 1 keyword hit (Apple) — earlier in dict but less evidence
+        result = _match_ticker(
+            "Amazon AWS expansion led by Andy Jassy; Apple mentioned briefly",
+            "",
+        )
+        assert result == "AMZN"
+
+    def test_tiebreak_favors_dict_order(self) -> None:
+        """With equal keyword counts, the first ticker in dict order wins."""
+        # AAPL: "Apple" (1 hit), MSFT: "Microsoft" (1 hit)
+        # AAPL is earlier in dict → wins the tie
+        result = _match_ticker("Apple and Microsoft", "")
+        assert result == "AAPL"
 
 
 # ======================================================================
@@ -195,6 +214,16 @@ class TestParseDate:
 
     def test_whitespace_stripped(self) -> None:
         assert _parse_date("  2025-06-15  ") == date(2025, 6, 15)
+
+    def test_iso_fractional_seconds(self) -> None:
+        """NewsAPI often returns fractional seconds — must not be dropped."""
+        assert _parse_date("2025-06-15T10:30:00.123Z") == date(2025, 6, 15)
+
+    def test_iso_fractional_seconds_with_offset(self) -> None:
+        assert _parse_date("2025-06-15T10:30:00.456789+05:30") == date(2025, 6, 15)
+
+    def test_iso_microsecond_precision(self) -> None:
+        assert _parse_date("2025-06-15T10:30:00.123456Z") == date(2025, 6, 15)
 
 
 # ======================================================================

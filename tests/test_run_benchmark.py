@@ -208,7 +208,7 @@ class TestSaveOutputs:
 class TestRunUSBenchmark:
     def test_end_to_end_with_naive(self, tmp_path: Path) -> None:
         """Full pipeline with pre-loaded OHLCV and NaiveModelFactory."""
-        ohlcv = _make_ohlcv(["A", "B", "SPY"], n_days=800)
+        ohlcv = _make_ohlcv(["A", "B", "SPY"], n_days=1300)
 
         config = {
             "market": "US",
@@ -222,7 +222,7 @@ class TestRunUSBenchmark:
             result = run_us_benchmark(
                 output_dir=str(tmp_path),
                 use_patchtst=False,
-                n_years=2,
+                n_years=4,
                 ohlcv=ohlcv,
             )
 
@@ -237,7 +237,7 @@ class TestRunUSBenchmark:
 
     def test_metrics_json_valid(self, tmp_path: Path) -> None:
         """Metrics JSON is valid and contains expected keys."""
-        ohlcv = _make_ohlcv(["X", "Y", "SPY"], n_days=800)
+        ohlcv = _make_ohlcv(["X", "Y", "SPY"], n_days=1300)
 
         config = {
             "market": "US",
@@ -251,7 +251,7 @@ class TestRunUSBenchmark:
             run_us_benchmark(
                 output_dir=str(tmp_path),
                 use_patchtst=False,
-                n_years=2,
+                n_years=4,
                 ohlcv=ohlcv,
             )
 
@@ -265,7 +265,7 @@ class TestRunUSBenchmark:
 
     def test_config_from_file(self, tmp_path: Path) -> None:
         """Config is loaded from the specified path."""
-        ohlcv = _make_ohlcv(["A", "SPY"], n_days=800)
+        ohlcv = _make_ohlcv(["A", "SPY"], n_days=1300)
 
         config = {
             "market": "US",
@@ -280,14 +280,14 @@ class TestRunUSBenchmark:
                 config_path="custom/path.json",
                 output_dir=str(tmp_path),
                 use_patchtst=False,
-                n_years=2,
+                n_years=4,
                 ohlcv=ohlcv,
             )
             mock_load.assert_called_once_with("custom/path.json")
 
     def test_weights_parquet_has_rebalances(self, tmp_path: Path) -> None:
         """Weights parquet contains rebalance history."""
-        ohlcv = _make_ohlcv(["A", "B", "SPY"], n_days=800)
+        ohlcv = _make_ohlcv(["A", "B", "SPY"], n_days=1300)
 
         config = {
             "market": "US",
@@ -301,7 +301,7 @@ class TestRunUSBenchmark:
             run_us_benchmark(
                 output_dir=str(tmp_path),
                 use_patchtst=False,
-                n_years=2,
+                n_years=4,
                 ohlcv=ohlcv,
             )
 
@@ -313,7 +313,7 @@ class TestRunUSBenchmark:
 
     def test_pdf_report_failure_non_fatal(self, tmp_path: Path) -> None:
         """If PDF generation fails, pipeline still completes."""
-        ohlcv = _make_ohlcv(["A", "SPY"], n_days=800)
+        ohlcv = _make_ohlcv(["A", "SPY"], n_days=1300)
 
         config = {
             "market": "US",
@@ -331,7 +331,7 @@ class TestRunUSBenchmark:
             result = run_us_benchmark(
                 output_dir=str(tmp_path),
                 use_patchtst=False,
-                n_years=2,
+                n_years=4,
                 ohlcv=ohlcv,
             )
 

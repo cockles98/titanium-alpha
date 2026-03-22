@@ -8,6 +8,7 @@ to Parquet files.
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 
 import polars as pl
@@ -55,6 +56,11 @@ class PredictionPipeline:
         Raises:
             ValueError: If no data is found for the configured tickers.
         """
+        _TICKER_RE = re.compile(r"^[A-Z0-9.\-]{1,10}$")
+        for t in self.tickers:
+            if not _TICKER_RE.match(t):
+                raise ValueError(f"Invalid ticker symbol: {t!r}")
+
         ticker_list = ", ".join(f"'{t}'" for t in self.tickers)
         query = (
             f"SELECT date, ticker, open, high, low, close, volume, adj_close "
@@ -86,13 +92,15 @@ class PredictionPipeline:
     ) -> pl.DataFrame:
         """Compute MAE and RMSE per ticker from quantile forecasts.
 
-        Compares the median forecast (PatchTST-q0.5) at horizon h
-        against the last h known close prices per ticker.
+        Joins forecast and actual DataFrames on (ticker, date) to ensure
+        temporal alignment.  Returns empty metrics when no overlapping
+        dates exist (e.g., during a production run where future actuals
+        are not yet available).
 
         Args:
             forecast_df: NeuralForecast output with quantile columns.
             actual_df: DataFrame with date, ticker, close columns.
-            h: Forecast horizon (number of steps to compare).
+            h: Forecast horizon (unused — kept for API compat).
 
         Returns:
             DataFrame with columns: ticker, mae, rmse.
@@ -105,26 +113,46 @@ class PredictionPipeline:
             logger.warning("No median column in forecast; skipping metrics")
             return pl.DataFrame({"ticker": [], "mae": [], "rmse": []})
 
+        # Normalise column names for join
+        id_col = "ticker" if "ticker" in forecast_df.columns else "unique_id"
+        time_col = "ds" if "ds" in forecast_df.columns else "date"
+
+        fc = forecast_df.select([
+            pl.col(id_col).alias("ticker"),
+            pl.col(time_col).alias("date"),
+            pl.col(median_col).alias("predicted"),
+        ])
+
+        act = actual_df.select(["ticker", "date", "close"])
+
+        # Guard against type mismatch (e.g. integer ds vs datetime date)
+        if fc["date"].dtype != act["date"].dtype:
+            logger.info(
+                "Date type mismatch (forecast: {}, actual: {}); "
+                "metrics unavailable",
+                fc["date"].dtype, act["date"].dtype,
+            )
+            return pl.DataFrame({"ticker": [], "mae": [], "rmse": []})
+
+        # Inner join: only dates present in both forecast and actuals
+        joined = fc.join(act, on=["ticker", "date"], how="inner")
+
+        if joined.height == 0:
+            logger.info(
+                "No overlapping dates between forecast and actuals; "
+                "metrics will be available after actuals are observed"
+            )
+            return pl.DataFrame({"ticker": [], "mae": [], "rmse": []})
+
         tickers: list[str] = []
         maes: list[float] = []
         rmses: list[float] = []
 
-        id_col = "ticker" if "ticker" in forecast_df.columns else "unique_id"
-        unique_ids = forecast_df[id_col].unique().to_list()
-        for ticker in unique_ids:
-            # Get forecast values (h rows per ticker)
-            fc_rows = forecast_df.filter(pl.col(id_col) == ticker)
-            predicted = fc_rows[median_col].to_list()
+        for ticker in joined["ticker"].unique().to_list():
+            rows = joined.filter(pl.col("ticker") == ticker)
+            errors = (rows["predicted"] - rows["close"]).to_list()
+            n = len(errors)
 
-            # Get last h actual closes
-            actual_rows = actual_df.filter(pl.col("ticker") == ticker).sort("date")
-            actual_closes = actual_rows["close"].tail(h).to_list()
-
-            n = min(len(predicted), len(actual_closes))
-            if n == 0:
-                continue
-
-            errors = [p - a for p, a in zip(predicted[:n], actual_closes[:n])]
             mae = sum(abs(e) for e in errors) / n
             rmse = math.sqrt(sum(e**2 for e in errors) / n)
 
@@ -133,10 +161,8 @@ class PredictionPipeline:
             rmses.append(rmse)
 
             logger.info(
-                "Metrics {}: MAE={:.4f}, RMSE={:.4f}",
-                ticker,
-                mae,
-                rmse,
+                "Metrics {}: MAE={:.4f}, RMSE={:.4f} (n={})",
+                ticker, mae, rmse, n,
             )
 
         return pl.DataFrame({"ticker": tickers, "mae": maes, "rmse": rmses})
@@ -173,13 +199,13 @@ class PredictionPipeline:
         )
         forecaster.fit(features_df, val_size=self.val_size)
 
-        # 4. Generate forecasts
+        # 4. Generate forecasts (single predict call, reused for prob_up)
         forecast_df = forecaster.predict()
-        proba_df = forecaster.predict_proba(features_df)
+        proba_df = forecaster.predict_proba(features_df, forecast=forecast_df)
 
         logger.info("Predictions:\n{}", proba_df)
 
-        # 5. Compute metrics (in-sample: compare forecast vs last h closes)
+        # 5. Compute metrics (date-aligned join; empty until actuals observed)
         metrics_df = self.compute_metrics(forecast_df, features_df, h=forecaster.h)
 
         # 6. Save outputs

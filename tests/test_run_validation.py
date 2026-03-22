@@ -1,13 +1,13 @@
 """Tests for ``src.backtest.run_validation``.
 
-Validates the CPCV-OOS validation pipeline: config grid building,
-momentum factory variants, output generation, and end-to-end integration.
+Validates the 3-tier CPCV-OOS validation pipeline: Trial construction,
+parameter fingerprinting, dedup logic, tier builders, output generation,
+and the legacy API.
 """
 
 from __future__ import annotations
 
 import json
-import math
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -19,15 +19,23 @@ import pytest
 from src.backtest.cpcv import TransactionCosts
 from src.backtest.cpcv_oos import ValidationResult
 from src.backtest.run_validation import (
-    _base_config,
-    _save_per_path_parquet,
-    _save_results_json,
+    Trial,
+    _dedup,
+    _dyn_maxw,
+    _hrp,
+    _param_fp,
+    _save_paths_parquet,
     _save_summary_md,
-    build_all_configs,
-    build_momentum_factories,
-    build_tier1_configs,
-    build_tier2_configs,
+    _save_tier_json,
+    _t,
+    _trial_from_params,
+    _trial_params,
+    _wf,
+    build_tier1,
+    build_tier2,
+    build_tier3,
     run_improvement_validation,
+    run_tier,
 )
 from src.backtest.walk_forward import (
     KillswitchConfig,
@@ -60,7 +68,7 @@ def _make_ohlcv(
             d = start + timedelta(days=day)
             vol = 0.005 + t_idx * 0.002
             ret = 0.0003 + rng.gauss(0, vol)
-            price *= (1 + ret)
+            price *= 1 + ret
             rows.append({
                 "date": d,
                 "ticker": ticker,
@@ -80,166 +88,218 @@ def ohlcv() -> pl.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Config builders
+# Helpers
 # ---------------------------------------------------------------------------
 
 
-class TestBaseConfig:
-    """Tests for _base_config helper."""
+class TestDynMaxW:
+    def test_small_n(self) -> None:
+        assert _dyn_maxw(4) == 0.25  # min(0.25, 2/4) = 0.25
 
-    def test_default_values(self) -> None:
-        """Baseline config has expected defaults."""
-        cfg = _base_config()
+    def test_large_n(self) -> None:
+        assert _dyn_maxw(50) == pytest.approx(0.04)  # 2/50
+
+    def test_n_zero(self) -> None:
+        """Handles n=0 gracefully."""
+        assert _dyn_maxw(0) == 0.25  # min(0.25, 2/1)
+
+
+class TestHRPHelper:
+    def test_baseline_defaults(self) -> None:
+        h = _hrp(50)
+        assert h.linkage_method == "single"
+        assert h.shrinkage is False
+        assert h.max_weight == pytest.approx(0.04)
+
+    def test_overrides(self) -> None:
+        h = _hrp(50, linkage_method="ward", shrinkage=True)
+        assert h.linkage_method == "ward"
+        assert h.shrinkage is True
+
+
+class TestWFHelper:
+    def test_baseline_defaults(self) -> None:
+        cfg = _wf()
         assert cfg.rebalance_every == 5
         assert cfg.retrain_every == 126
         assert cfg.lookback_days == 504
-        assert cfg.costs is not None
-        assert cfg.min_rebalance_delta == 0.02
         assert cfg.rf == 0.05
 
     def test_overrides(self) -> None:
-        """Overrides are applied correctly."""
-        cfg = _base_config(rebalance_every=10, target_vol=0.10)
-        assert cfg.rebalance_every == 10
-        assert cfg.target_vol == 0.10
+        cfg = _wf(rebalance_every=1, target_vol=0.12)
+        assert cfg.rebalance_every == 1
+        assert cfg.target_vol == 0.12
         assert cfg.lookback_days == 504  # unchanged
 
 
+class TestTrialShorthand:
+    def test_creates_trial(self) -> None:
+        t = _t("test", mom=10, rebalance_every=3)
+        assert t.name == "test"
+        assert t.factory.lookback == 10
+        assert t.wf_config.rebalance_every == 3
+
+
+# ---------------------------------------------------------------------------
+# Parameter fingerprinting & dedup
+# ---------------------------------------------------------------------------
+
+
+class TestTrialParams:
+    def test_extracts_all_keys(self) -> None:
+        trial = _t("test")
+        params = _trial_params(trial, 50)
+        expected_keys = {
+            "momentum_lookback", "rebalance_every", "retrain_every",
+            "lookback_days", "linkage_method", "shrinkage", "correlation_method",
+            "confidence_tilt_cap", "max_weight", "min_weight", "turnover_threshold",
+            "target_vol", "vol_lookback", "min_leverage", "max_leverage",
+            "killswitch_max_dd", "killswitch_recovery", "killswitch_ramp",
+            "min_rebalance_delta", "slippage_bps", "commission_bps",
+            "market_impact_bps",
+        }
+        assert set(params.keys()) == expected_keys
+
+    def test_includes_market_impact(self) -> None:
+        """market_impact_bps is present in fingerprint (prevents dedup bugs)."""
+        trial = _t("test")
+        params = _trial_params(trial, 50)
+        assert "market_impact_bps" in params
+        assert params["market_impact_bps"] == 0.0
+
+    def test_killswitch_params(self) -> None:
+        trial = _t("ks", killswitch=KillswitchConfig(max_drawdown_pct=-0.15))
+        params = _trial_params(trial, 50)
+        assert params["killswitch_max_dd"] == -0.15
+        assert params["killswitch_recovery"] is not None
+
+
+class TestParamFingerprint:
+    def test_deterministic(self) -> None:
+        t1 = _t("a")
+        t2 = _t("b")  # same params, different name
+        fp1 = _param_fp(_trial_params(t1, 50))
+        fp2 = _param_fp(_trial_params(t2, 50))
+        assert fp1 == fp2
+
+    def test_different_params(self) -> None:
+        t1 = _t("a", mom=1)
+        t2 = _t("b", mom=21)
+        fp1 = _param_fp(_trial_params(t1, 50))
+        fp2 = _param_fp(_trial_params(t2, 50))
+        assert fp1 != fp2
+
+    def test_market_impact_differentiates(self) -> None:
+        """Configs with different market_impact_bps have different fingerprints."""
+        p1 = _trial_params(_t("a"), 50)
+        p2 = {**p1, "market_impact_bps": 5.0}
+        assert _param_fp(p1) != _param_fp(p2)
+
+
+class TestDedup:
+    def test_removes_duplicates(self) -> None:
+        trials = [_t("a"), _t("b")]  # same params
+        unique = _dedup(trials, 50)
+        assert len(unique) == 1
+
+    def test_keeps_different(self) -> None:
+        trials = [_t("a", mom=1), _t("b", mom=21)]
+        unique = _dedup(trials, 50)
+        assert len(unique) == 2
+
+    def test_cross_tier_dedup(self) -> None:
+        existing_fp = _param_fp(_trial_params(_t("old"), 50))
+        trials = [_t("new")]  # same params as "old"
+        unique = _dedup(trials, 50, existing_fps={existing_fp})
+        assert len(unique) == 0
+
+
+class TestTrialFromParams:
+    def test_roundtrip(self) -> None:
+        """Params extracted from a Trial can reconstruct an equivalent Trial."""
+        original = _t("orig", mom=3, rebalance_every=10)
+        params = _trial_params(original, 50)
+        rebuilt = _trial_from_params("rebuilt", params, 50)
+        rebuilt_params = _trial_params(rebuilt, 50)
+        assert _param_fp(params) == _param_fp(rebuilt_params)
+
+    def test_with_killswitch(self) -> None:
+        original = _t("ks", killswitch=KillswitchConfig(max_drawdown_pct=-0.20))
+        params = _trial_params(original, 50)
+        rebuilt = _trial_from_params("rebuilt", params, 50)
+        assert rebuilt.wf_config.killswitch is not None
+        assert rebuilt.wf_config.killswitch.max_drawdown_pct == -0.20
+
+
+# ---------------------------------------------------------------------------
+# Tier builders
+# ---------------------------------------------------------------------------
+
+
 class TestBuildTier1:
-    """Tests for build_tier1_configs."""
-
     def test_has_baseline(self) -> None:
-        configs = build_tier1_configs()
-        assert "baseline" in configs
+        trials = build_tier1(50)
+        names = [t.name for t in trials]
+        assert "baseline" in names
 
-    def test_has_vol_targets(self) -> None:
-        configs = build_tier1_configs()
-        assert "vol_target_08" in configs
-        assert "vol_target_10" in configs
-        assert "vol_target_12" in configs
-        assert configs["vol_target_10"].target_vol == 0.10
+    def test_has_momentum_sweeps(self) -> None:
+        trials = build_tier1(50)
+        names = {t.name for t in trials}
+        assert "s_mom001" in names
+        assert "s_mom021" in names
+        assert "s_mom126" in names
 
     def test_has_hrp_variants(self) -> None:
-        configs = build_tier1_configs()
-        assert "ward_linkage" in configs
-        assert "shrinkage" in configs
-        assert "ward_shrinkage" in configs
+        trials = build_tier1(50)
+        names = {t.name for t in trials}
+        assert "s_ward" in names
+        assert "s_shrink" in names
+        assert "s_ward_shrink" in names
 
-    def test_ward_linkage_config(self) -> None:
-        configs = build_tier1_configs(n_tickers=50)
-        hrp = configs["ward_linkage"].hrp_config
-        assert hrp is not None
-        assert hrp.linkage_method == "ward"
-        assert hrp.max_weight == pytest.approx(0.04)  # min(0.25, 2/50)
+    def test_no_duplicates(self) -> None:
+        trials = build_tier1(50)
+        fps = [_param_fp(_trial_params(t, 50)) for t in trials]
+        assert len(fps) == len(set(fps))
 
-    def test_shrinkage_config(self) -> None:
-        configs = build_tier1_configs(n_tickers=50)
-        hrp = configs["shrinkage"].hrp_config
-        assert hrp is not None
-        assert hrp.shrinkage is True
-        assert hrp.max_weight == pytest.approx(0.04)
-
-    def test_ward_shrinkage_config(self) -> None:
-        configs = build_tier1_configs(n_tickers=50)
-        hrp = configs["ward_shrinkage"].hrp_config
-        assert hrp is not None
-        assert hrp.linkage_method == "ward"
-        assert hrp.shrinkage is True
-        assert hrp.max_weight == pytest.approx(0.04)
-
-    def test_hrp_max_weight_matches_dynamic_default(self) -> None:
-        """HRP configs use the same dynamic max_weight as baseline."""
-        configs = build_tier1_configs(n_tickers=4)
-        hrp = configs["ward_linkage"].hrp_config
-        assert hrp is not None
-        assert hrp.max_weight == pytest.approx(0.25)  # min(0.25, 2/4) = 0.25
-
-    def test_count(self) -> None:
-        """Tier 1 has expected number of configs."""
-        configs = build_tier1_configs()
-        assert len(configs) == 7  # baseline + 3 vol + 3 hrp
+    def test_count_within_budget(self) -> None:
+        """Tier 1 fits in 18h at ~375s/config (<=172 configs)."""
+        trials = build_tier1(50)
+        assert len(trials) <= 180  # small margin
 
 
 class TestBuildTier2:
-    """Tests for build_tier2_configs."""
+    def test_has_factorial_combos(self) -> None:
+        trials = build_tier2(50)
+        names = {t.name for t in trials}
+        # 3-way mom x rebal x tilt (rebal shifted to sweet spot 5-15)
+        assert "t2a_m01_r05_t020" in names
 
-    def test_has_rebalance_variants(self) -> None:
-        configs = build_tier2_configs()
-        assert "rebalance_10d" in configs
-        assert "rebalance_21d" in configs
+    def test_has_rebalance_fine_grain(self) -> None:
+        trials = build_tier2(50)
+        names = {t.name for t in trials}
+        assert any("t2f_rb" in n for n in names)
 
-    def test_has_tilt_variants(self) -> None:
-        configs = build_tier2_configs()
-        assert "no_tilt" in configs
-        assert "tilt_010" in configs
-        assert "tilt_030" in configs
+    def test_no_duplicates(self) -> None:
+        trials = build_tier2(50)
+        fps = [_param_fp(_trial_params(t, 50)) for t in trials]
+        assert len(fps) == len(set(fps))
 
-    def test_has_lookback_variants(self) -> None:
-        configs = build_tier2_configs()
-        assert "lookback_252" in configs
-        assert "lookback_756" in configs
-
-    def test_has_killswitch_variants(self) -> None:
-        configs = build_tier2_configs()
-        assert "killswitch_15" in configs
-        assert "killswitch_20" in configs
-        assert "killswitch_25" in configs
-
-    def test_killswitch_config(self) -> None:
-        configs = build_tier2_configs()
-        ks = configs["killswitch_15"].killswitch
-        assert ks is not None
-        assert ks.max_drawdown_pct == -0.15
-
-    def test_count(self) -> None:
-        """Tier 2 has expected number of configs."""
-        configs = build_tier2_configs()
-        assert len(configs) == 10  # 2 rebal + 3 tilt + 2 lookback + 3 ks
+    def test_god_bases_not_mutated(self) -> None:
+        """god_bases dicts must not be mutated during tier build."""
+        # Run twice — if mutation occurs, second run will differ
+        t1 = build_tier2(50)
+        t2 = build_tier2(50)
+        assert len(t1) == len(t2)
+        names1 = [t.name for t in t1]
+        names2 = [t.name for t in t2]
+        assert names1 == names2
 
 
-class TestBuildAllConfigs:
-    """Tests for build_all_configs."""
-
-    def test_all_includes_all_tiers(self) -> None:
-        configs = build_all_configs("all")
-        assert "baseline" in configs  # tier1
-        assert "rebalance_10d" in configs  # tier2
-        assert "rebalance_1d" in configs  # tier3
-        assert "t4_vol_lookback_21" in configs  # tier4
-        assert len(configs) == 39  # 7 + 10 + 13 + 9
-
-    def test_tier1_only(self) -> None:
-        configs = build_all_configs("tier1")
-        assert "baseline" in configs
-        assert "rebalance_10d" not in configs
-        assert len(configs) == 7
-
-    def test_tier2_only(self) -> None:
-        configs = build_all_configs("tier2")
-        assert "baseline" in configs  # auto-added if not present
-        assert "rebalance_10d" in configs
-        assert len(configs) == 11  # 10 tier2 + 1 baseline
-
-
-class TestBuildMomentumFactories:
-    """Tests for build_momentum_factories."""
-
-    def test_count(self) -> None:
-        factories = build_momentum_factories()
-        assert len(factories) == 8
-
-    def test_lookback_values(self) -> None:
-        factories = build_momentum_factories()
-        assert factories["momentum_1d"].lookback == 1
-        assert factories["momentum_5d"].lookback == 5
-        assert factories["momentum_21d"].lookback == 21
-        assert factories["momentum_63d"].lookback == 63
-        assert factories["momentum_126d"].lookback == 126
-
-    def test_all_are_naive_factory(self) -> None:
-        factories = build_momentum_factories()
-        for f in factories.values():
-            assert isinstance(f, NaiveModelFactory)
+class TestBuildTier3:
+    def test_fallback_when_no_results(self) -> None:
+        """Without prior results, falls back to predefined grid."""
+        trials = build_tier3(50)
+        assert len(trials) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -247,135 +307,58 @@ class TestBuildMomentumFactories:
 # ---------------------------------------------------------------------------
 
 
-def _make_validation_result(
-    mean_sharpe: float = 0.5,
-    accepted: bool = True,
-) -> ValidationResult:
-    """Create a mock ValidationResult for output tests."""
-    return ValidationResult(
-        config=_base_config(),
-        mean_sharpe=mean_sharpe,
-        std_sharpe=0.1,
-        pct_positive=0.8,
-        per_path_sharpe=[0.5, 0.6, -0.1, 0.4, 0.3],
-        deflated_sharpe=0.97,
-        p_value=0.97,
-        accepted=accepted,
-    )
-
-
-class TestSaveResultsJson:
-    """Tests for _save_results_json."""
-
+class TestSaveTierJson:
     def test_creates_file(self, tmp_path: Path) -> None:
-        results = [("baseline", _make_validation_result())]
-        path = _save_results_json(results, tmp_path)
+        _save_tier_json(1, {"baseline": {"mean_sharpe": 0.5}}, 1, tmp_path)
+        path = tmp_path / "validation_tier1_results.json"
         assert path.exists()
-        assert path.name == "validation_results.json"
 
     def test_json_structure(self, tmp_path: Path) -> None:
-        results = [
-            ("baseline", _make_validation_result(0.5)),
-            ("ward", _make_validation_result(0.6)),
-        ]
-        path = _save_results_json(results, tmp_path)
-        data = json.loads(path.read_text())
-        assert data["n_configs"] == 2
+        configs = {"baseline": {"mean_sharpe": 0.5, "accepted": True}}
+        _save_tier_json(1, configs, 1, tmp_path)
+        data = json.loads((tmp_path / "validation_tier1_results.json").read_text())
+        assert data["tier"] == 1
+        assert data["completed"] == 1
         assert "baseline" in data["configs"]
-        assert "ward" in data["configs"]
-        assert "generated_at" in data
 
-    def test_result_fields(self, tmp_path: Path) -> None:
-        results = [("test", _make_validation_result(0.42))]
-        path = _save_results_json(results, tmp_path)
-        data = json.loads(path.read_text())
-        cfg = data["configs"]["test"]
-        assert cfg["mean_sharpe"] == pytest.approx(0.42)
-        assert "per_path_sharpe" in cfg
-        assert "accepted" in cfg
+    def test_atomic_write(self, tmp_path: Path) -> None:
+        """No .tmp file should remain after save."""
+        _save_tier_json(1, {}, 0, tmp_path)
+        assert not (tmp_path / "validation_tier1_results.tmp").exists()
 
 
 class TestSaveSummaryMd:
-    """Tests for _save_summary_md."""
-
     def test_creates_file(self, tmp_path: Path) -> None:
-        results = [("baseline", _make_validation_result())]
-        path = _save_summary_md(results, None, tmp_path)
+        configs = {"baseline": {"mean_sharpe": 0.5, "std_sharpe": 0.1,
+                                "pct_positive": 0.8, "deflated_sharpe": 0.9, "accepted": True}}
+        _save_summary_md(1, configs, tmp_path)
+        path = tmp_path / "validation_tier1_summary.md"
         assert path.exists()
-        assert path.name == "validation_summary.md"
 
-    def test_contains_table_headers(self, tmp_path: Path) -> None:
-        results = [("baseline", _make_validation_result())]
-        path = _save_summary_md(results, None, tmp_path)
-        content = path.read_text()
-        assert "Config" in content
-        assert "Mean Sharpe" in content
-        assert "DSR p-value" in content
-
-    def test_contains_config_names(self, tmp_path: Path) -> None:
-        results = [
-            ("baseline", _make_validation_result()),
-            ("ward_shrinkage", _make_validation_result()),
-        ]
-        path = _save_summary_md(results, None, tmp_path)
-        content = path.read_text()
+    def test_contains_rankings(self, tmp_path: Path) -> None:
+        configs = {"baseline": {"mean_sharpe": 0.5, "std_sharpe": 0.1,
+                                "pct_positive": 0.8, "deflated_sharpe": 0.9, "accepted": True}}
+        _save_summary_md(1, configs, tmp_path)
+        content = (tmp_path / "validation_tier1_summary.md").read_text()
         assert "baseline" in content
-        assert "ward_shrinkage" in content
-
-    def test_accepted_formatting(self, tmp_path: Path) -> None:
-        results = [
-            ("accepted_cfg", _make_validation_result(accepted=True)),
-            ("rejected_cfg", _make_validation_result(accepted=False)),
-        ]
-        path = _save_summary_md(results, None, tmp_path)
-        content = path.read_text()
         assert "YES" in content
-        assert "| no |" in content
-
-    def test_momentum_section(self, tmp_path: Path) -> None:
-        config_results = [("baseline", _make_validation_result())]
-        mom_results = [("momentum_21d", _make_validation_result())]
-        path = _save_summary_md(config_results, mom_results, tmp_path)
-        content = path.read_text()
-        assert "Momentum Lookback" in content
-        assert "momentum_21d" in content
 
 
-class TestSavePerPathParquet:
-    """Tests for _save_per_path_parquet."""
-
+class TestSavePathsParquet:
     def test_creates_file(self, tmp_path: Path) -> None:
-        results = [("baseline", _make_validation_result())]
-        path = _save_per_path_parquet(results, None, tmp_path)
+        configs = {"baseline": {"per_path_sharpe": [0.5, 0.6, 0.3], "accepted": True}}
+        _save_paths_parquet(1, configs, tmp_path)
+        path = tmp_path / "validation_tier1_paths.parquet"
         assert path.exists()
-        assert path.name == "validation_per_path.parquet"
 
     def test_parquet_structure(self, tmp_path: Path) -> None:
-        results = [("baseline", _make_validation_result())]
-        path = _save_per_path_parquet(results, None, tmp_path)
-        df = pl.read_parquet(path)
+        configs = {"baseline": {"per_path_sharpe": [0.5, 0.6], "accepted": True}}
+        _save_paths_parquet(1, configs, tmp_path)
+        df = pl.read_parquet(tmp_path / "validation_tier1_paths.parquet")
         assert "config" in df.columns
         assert "path_id" in df.columns
         assert "sharpe" in df.columns
-        assert "accepted" in df.columns
-
-    def test_row_count(self, tmp_path: Path) -> None:
-        """Each config contributes len(per_path_sharpe) rows."""
-        r1 = _make_validation_result()
-        r1_paths = len(r1.per_path_sharpe)
-        results = [("a", r1), ("b", _make_validation_result())]
-        path = _save_per_path_parquet(results, None, tmp_path)
-        df = pl.read_parquet(path)
-        assert df.height == r1_paths * 2
-
-    def test_includes_momentum(self, tmp_path: Path) -> None:
-        config_results = [("baseline", _make_validation_result())]
-        mom_results = [("momentum_21d", _make_validation_result())]
-        path = _save_per_path_parquet(config_results, mom_results, tmp_path)
-        df = pl.read_parquet(path)
-        configs = df["config"].unique().to_list()
-        assert "baseline" in configs
-        assert "momentum_21d" in configs
+        assert df.height == 2
 
 
 # ---------------------------------------------------------------------------
@@ -384,8 +367,6 @@ class TestSavePerPathParquet:
 
 
 class TestHRPConfigInWalkForward:
-    """Tests that hrp_config field works in WalkForwardConfig."""
-
     def test_default_none(self) -> None:
         cfg = WalkForwardConfig()
         assert cfg.hrp_config is None
@@ -397,178 +378,80 @@ class TestHRPConfigInWalkForward:
         assert cfg.hrp_config.linkage_method == "ward"
         assert cfg.hrp_config.shrinkage is True
 
-    def test_backward_compat(self) -> None:
-        """Existing code using WalkForwardConfig() still works."""
-        cfg = WalkForwardConfig(rebalance_every=10)
-        assert cfg.rebalance_every == 10
-        assert cfg.hrp_config is None
+
+# ---------------------------------------------------------------------------
+# Integration: run_tier with mocked validator
+# ---------------------------------------------------------------------------
+
+
+class TestRunTier:
+    def _mock_validator(self) -> MagicMock:
+        validator = MagicMock(spec=["validate"])
+        validator.validate.return_value = ValidationResult(
+            config=_wf(),
+            mean_sharpe=0.5,
+            std_sharpe=0.1,
+            pct_positive=0.8,
+            per_path_sharpe=[0.5, 0.6, -0.1, 0.4, 0.3],
+            deflated_sharpe=0.97,
+            p_value=0.97,
+            accepted=True,
+        )
+        return validator
+
+    def test_runs_all_trials(self, tmp_path: Path) -> None:
+        trials = [_t("a", mom=1), _t("b", mom=21)]
+        validator = self._mock_validator()
+        results = run_tier(1, trials, validator, 50, tmp_path)
+        assert len(results) == 2
+        assert "a" in results
+        assert "b" in results
+        assert validator.validate.call_count == 2
+
+    def test_resume_skips_existing(self, tmp_path: Path) -> None:
+        """Pre-existing results are not re-run."""
+        # Pre-populate results for trial "a"
+        _save_tier_json(1, {"a": {"params": _trial_params(_t("a", mom=1), 50),
+                                  "mean_sharpe": 0.5}}, 2, tmp_path)
+        trials = [_t("a", mom=1), _t("b", mom=21)]
+        validator = self._mock_validator()
+        results = run_tier(1, trials, validator, 50, tmp_path)
+        # Only "b" should be newly validated
+        assert validator.validate.call_count == 1
+
+    def test_creates_output_files(self, tmp_path: Path) -> None:
+        trials = [_t("test")]
+        validator = self._mock_validator()
+        run_tier(1, trials, validator, 50, tmp_path)
+        assert (tmp_path / "validation_tier1_results.json").exists()
+        assert (tmp_path / "validation_tier1_summary.md").exists()
+        assert (tmp_path / "validation_tier1_paths.parquet").exists()
 
 
 # ---------------------------------------------------------------------------
-# Integration test (mocked validator)
+# Legacy API
 # ---------------------------------------------------------------------------
 
 
 class TestRunImprovementValidation:
-    """Integration tests for run_improvement_validation."""
-
-    def _make_mock_result(
-        self,
-        config: WalkForwardConfig,
-        mean_sharpe: float = 0.3,
-    ) -> ValidationResult:
-        """Create a ValidationResult for mocking."""
-        return ValidationResult(
-            config=config,
-            mean_sharpe=mean_sharpe,
-            std_sharpe=0.15,
-            pct_positive=0.73,
-            per_path_sharpe=[mean_sharpe + i * 0.01 for i in range(15)],
-            deflated_sharpe=0.80,
-            p_value=0.80,
-            accepted=False,
-        )
-
     @patch("src.backtest.run_validation.CPCVParameterValidator")
     def test_returns_dict(
-        self, mock_validator_cls: MagicMock, ohlcv: pl.DataFrame, tmp_path: Path
+        self, mock_cls: MagicMock, ohlcv: pl.DataFrame, tmp_path: Path
     ) -> None:
-        """Pipeline returns dict of name → ValidationResult."""
-        mock_validator = mock_validator_cls.return_value
-        mock_validator.grid_search.return_value = [
-            ("baseline", self._make_mock_result(_base_config())),
-        ]
-        mock_validator.validate.return_value = self._make_mock_result(
-            _base_config()
+        mock_validator = mock_cls.return_value
+        mock_validator.validate.return_value = ValidationResult(
+            config=_wf(),
+            mean_sharpe=0.5,
+            std_sharpe=0.1,
+            pct_positive=0.8,
+            per_path_sharpe=[0.5] * 15,
+            deflated_sharpe=0.9,
+            p_value=0.9,
+            accepted=True,
         )
-
         results = run_improvement_validation(
             ohlcv=ohlcv,
             tickers=["AAPL", "MSFT", "GOOG"],
             output_dir=str(tmp_path),
-            subset="tier1",
         )
         assert isinstance(results, dict)
-        assert "baseline" in results
-
-    @patch("src.backtest.run_validation.CPCVParameterValidator")
-    def test_creates_output_files(
-        self, mock_validator_cls: MagicMock, ohlcv: pl.DataFrame, tmp_path: Path
-    ) -> None:
-        """Pipeline creates all 3 output files."""
-        mock_validator = mock_validator_cls.return_value
-        mock_validator.grid_search.return_value = [
-            ("baseline", self._make_mock_result(_base_config())),
-        ]
-        mock_validator.validate.return_value = self._make_mock_result(
-            _base_config()
-        )
-
-        run_improvement_validation(
-            ohlcv=ohlcv,
-            tickers=["AAPL", "MSFT", "GOOG"],
-            output_dir=str(tmp_path),
-            subset="tier1",
-        )
-
-        assert (tmp_path / "validation_results.json").exists()
-        assert (tmp_path / "validation_summary.md").exists()
-        assert (tmp_path / "validation_per_path.parquet").exists()
-
-    @patch("src.backtest.run_validation.CPCVParameterValidator")
-    def test_grid_search_called_with_configs(
-        self, mock_validator_cls: MagicMock, ohlcv: pl.DataFrame, tmp_path: Path
-    ) -> None:
-        """grid_search is called with the built configs."""
-        mock_validator = mock_validator_cls.return_value
-        mock_validator.grid_search.return_value = []
-        mock_validator.validate.return_value = self._make_mock_result(
-            _base_config()
-        )
-
-        run_improvement_validation(
-            ohlcv=ohlcv,
-            tickers=["AAPL", "MSFT", "GOOG"],
-            output_dir=str(tmp_path),
-            subset="tier1",
-        )
-
-        mock_validator.grid_search.assert_called_once()
-        call_args = mock_validator.grid_search.call_args
-        configs = call_args.kwargs.get("configs") or call_args[1].get("configs")
-        assert "baseline" in configs
-
-    @patch("src.backtest.run_validation.CPCVParameterValidator")
-    def test_momentum_factories_validated(
-        self, mock_validator_cls: MagicMock, ohlcv: pl.DataFrame, tmp_path: Path
-    ) -> None:
-        """Momentum factories are validated via individual validate() calls."""
-        mock_validator = mock_validator_cls.return_value
-        mock_validator.grid_search.return_value = []
-        mock_validator.validate.return_value = self._make_mock_result(
-            _base_config()
-        )
-
-        run_improvement_validation(
-            ohlcv=ohlcv,
-            tickers=["AAPL", "MSFT", "GOOG"],
-            output_dir=str(tmp_path),
-            subset="tier1",
-        )
-
-        # 8 momentum factories → 8 validate() calls
-        assert mock_validator.validate.call_count == 8
-
-    @patch("src.backtest.run_validation.CPCVParameterValidator")
-    def test_includes_momentum_in_results(
-        self, mock_validator_cls: MagicMock, ohlcv: pl.DataFrame, tmp_path: Path
-    ) -> None:
-        """Momentum results are included in the final output."""
-        mock_validator = mock_validator_cls.return_value
-        mock_validator.grid_search.return_value = [
-            ("baseline", self._make_mock_result(_base_config())),
-        ]
-        mock_validator.validate.return_value = self._make_mock_result(
-            _base_config()
-        )
-
-        results = run_improvement_validation(
-            ohlcv=ohlcv,
-            tickers=["AAPL", "MSFT", "GOOG"],
-            output_dir=str(tmp_path),
-            subset="tier1",
-        )
-
-        # Should include both config grid and momentum factories
-        assert "momentum_5d" in results
-        assert "momentum_21d" in results
-        assert "momentum_63d" in results
-        assert "momentum_126d" in results
-
-    @patch("src.backtest.run_validation.CPCVParameterValidator")
-    def test_n_trials_consistent_across_grid_and_momentum(
-        self, mock_validator_cls: MagicMock, ohlcv: pl.DataFrame, tmp_path: Path
-    ) -> None:
-        """Both grid_search and momentum validate() use the same n_trials."""
-        mock_validator = mock_validator_cls.return_value
-        mock_validator.grid_search.return_value = []
-        mock_validator.validate.return_value = self._make_mock_result(
-            _base_config()
-        )
-
-        run_improvement_validation(
-            ohlcv=ohlcv,
-            tickers=["AAPL", "MSFT", "GOOG"],
-            output_dir=str(tmp_path),
-            subset="tier1",
-        )
-
-        # n_trials = len(tier1_configs) + len(factories) + len(god_combos)
-        # For tier1: 7 + 8 + 0 = 15
-        grid_call = mock_validator.grid_search.call_args
-        grid_n_trials = grid_call.kwargs.get("n_trials")
-        assert grid_n_trials == 15
-
-        validate_call = mock_validator.validate.call_args
-        validate_n_trials = validate_call.kwargs.get("n_trials")
-        assert validate_n_trials == 15

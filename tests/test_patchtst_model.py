@@ -121,12 +121,11 @@ class TestValidation:
 
     def test_missing_columns_raises(self) -> None:
         df = pl.DataFrame({"date": [1], "ticker": ["X"]})
-        f = TitaniumForecaster()
         with pytest.raises(ValueError, match="Missing required columns"):
-            f._validate_df(df)
+            TitaniumForecaster._prepare_df(df)
 
     def test_too_few_rows_raises(self) -> None:
-        """fit() should reject DataFrames smaller than input_size + val_size."""
+        """fit() should reject tickers with fewer than input_size + val_size rows."""
         from datetime import date, timedelta
 
         n = 10  # way less than input_size(60) + val_size(63)
@@ -138,7 +137,7 @@ class TestValidation:
             }
         )
         f = TitaniumForecaster()
-        with pytest.raises(ValueError, match="Need at least"):
+        with pytest.raises(ValueError, match="Tickers with fewer than"):
             f.fit(df, val_size=63)
 
     def test_predict_before_fit_raises(self) -> None:
@@ -547,6 +546,48 @@ class TestComputeProbUp:
         )
         assert result.height == 0
 
+    def test_skips_ticker_with_nan_predictions(self) -> None:
+        """NaN quantile predictions must be filtered, not corrupt prob_up."""
+        forecast = pl.DataFrame(
+            {
+                "unique_id": ["SPY"] * 5,
+                "ds": list(range(5)),
+                "PatchTST-q0.1": [float("nan")] * 5,
+                "PatchTST-q0.25": [float("nan")] * 5,
+                "PatchTST-q0.5": [float("nan")] * 5,
+                "PatchTST-q0.75": [float("nan")] * 5,
+                "PatchTST-q0.9": [float("nan")] * 5,
+            }
+        )
+        result = TitaniumForecaster._compute_prob_up(
+            forecast,
+            last_closes={"SPY": 100.0},
+            quantiles=[0.1, 0.25, 0.5, 0.75, 0.9],
+        )
+        # All NaN → ticker skipped
+        assert result.height == 0
+
+    def test_partial_nan_predictions_still_work(self) -> None:
+        """Some NaN quantiles are filtered; valid ones produce a result."""
+        forecast = pl.DataFrame(
+            {
+                "unique_id": ["SPY"] * 5,
+                "ds": list(range(5)),
+                "PatchTST-q0.1": [float("nan")] * 5,
+                "PatchTST-q0.25": [95.0] * 5,
+                "PatchTST-q0.5": [105.0] * 5,
+                "PatchTST-q0.75": [float("nan")] * 5,
+                "PatchTST-q0.9": [115.0] * 5,
+            }
+        )
+        result = TitaniumForecaster._compute_prob_up(
+            forecast,
+            last_closes={"SPY": 100.0},
+            quantiles=[0.1, 0.25, 0.5, 0.75, 0.9],
+        )
+        assert result.height == 1
+        assert 0.0 <= result["prob_up"][0] <= 1.0
+
 
 # ---------------------------------------------------------------------------
 # TestInterpolateProbUp
@@ -608,8 +649,8 @@ class TestInterpolateProbUp:
             q_values=[100, 110, 120],
             close=100.0,
         )
-        # close <= vals[0]=100 → 1 - 0.1/2 = 0.95
-        assert prob == pytest.approx(0.95)
+        # close == q0.1=100 → CDF(100) = 0.1, prob_up = 0.9
+        assert prob == pytest.approx(0.9)
 
     def test_close_at_highest_quantile(self) -> None:
         """Close exactly at highest quantile value."""
@@ -618,8 +659,8 @@ class TestInterpolateProbUp:
             q_values=[90, 100, 110],
             close=110.0,
         )
-        # close >= vals[-1]=110 → (1-0.9)/2 = 0.05
-        assert prob == pytest.approx(0.05)
+        # close == q0.9=110 → CDF(110) = 0.9, prob_up = 0.1
+        assert prob == pytest.approx(0.1)
 
     def test_single_quantile_above(self) -> None:
         """Single quantile, close below → high prob."""
@@ -641,12 +682,68 @@ class TestInterpolateProbUp:
         # close >= vals[-1]=90 → (1-0.5)/2 = 0.25
         assert prob == pytest.approx(0.25)
 
+    def test_adjacent_quantiles_collapsed(self) -> None:
+        """Adjacent quantile values identical → conservative CDF estimate."""
+        prob = TitaniumForecaster._interpolate_prob_up(
+            q_levels=[0.1, 0.25, 0.5, 0.75, 0.9],
+            q_values=[90, 100, 100, 110, 120],
+            close=100.0,
+        )
+        # q0.25=q0.5=100, max matching level = 0.5
+        # CDF = 0.5, prob_up = 1 - 0.5 = 0.5
+        assert prob == pytest.approx(0.5)
+        assert 0.0 <= prob <= 1.0
+
+    def test_all_quantiles_same_value(self) -> None:
+        """All quantile predictions identical (extreme low confidence)."""
+        prob = TitaniumForecaster._interpolate_prob_up(
+            q_levels=[0.1, 0.25, 0.5, 0.75, 0.9],
+            q_values=[100, 100, 100, 100, 100],
+            close=100.0,
+        )
+        # All quantiles at close → max matching level = 0.9
+        # CDF = 0.9, prob_up = 1 - 0.9 = 0.1
+        assert prob == pytest.approx(0.1)
+        assert 0.0 <= prob <= 1.0
+
     def test_output_bounded_0_1(self) -> None:
         """Result is always in [0, 1]."""
         for close in [50, 80, 100, 120, 150]:
             prob = TitaniumForecaster._interpolate_prob_up(
                 q_levels=[0.1, 0.25, 0.5, 0.75, 0.9],
                 q_values=[90, 95, 100, 105, 110],
+                close=float(close),
+            )
+            assert 0.0 <= prob <= 1.0
+
+    def test_quantile_crossing_monotone_cdf(self) -> None:
+        """Quantile crossing (Q0.25 > Q0.5) must still produce valid CDF.
+
+        MQLoss does not enforce monotone quantile predictions.  The
+        rearrangement fix sorts values and levels independently so the
+        CDF remains non-decreasing.
+        """
+        # Q(0.25)=108 > Q(0.5)=105 → crossing
+        prob = TitaniumForecaster._interpolate_prob_up(
+            q_levels=[0.1, 0.25, 0.5, 0.75, 0.9],
+            q_values=[100, 108, 105, 110, 115],
+            close=106.0,
+        )
+        # After rearrangement: vals=[100,105,108,110,115], probs=[0.1,0.25,0.5,0.75,0.9]
+        # close=106 between vals[1]=105 and vals[2]=108
+        # frac = (106-105)/(108-105) = 1/3
+        # cdf = 0.25 + (1/3)*(0.5-0.25) = 0.3333
+        # prob_up = 1 - 0.3333 = 0.6667
+        assert prob == pytest.approx(2.0 / 3.0, abs=1e-9)
+        assert 0.0 <= prob <= 1.0
+
+    def test_quantile_crossing_bounded(self) -> None:
+        """Severe quantile crossing still produces bounded [0, 1] output."""
+        # Extreme crossing: levels and values in opposite order
+        for close in [80, 95, 100, 110, 125]:
+            prob = TitaniumForecaster._interpolate_prob_up(
+                q_levels=[0.1, 0.25, 0.5, 0.75, 0.9],
+                q_values=[120, 110, 100, 95, 85],  # completely reversed
                 close=float(close),
             )
             assert 0.0 <= prob <= 1.0

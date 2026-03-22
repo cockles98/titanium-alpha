@@ -113,6 +113,7 @@ def deflated_sharpe_ratio(
     skewness: float = 0.0,
     kurtosis: float = 3.0,
     sharpe_benchmark: float = 0.0,
+    periods_per_year: int = 252,  # NOVO PARÂMETRO
 ) -> float:
     """Compute the Deflated Sharpe Ratio p-value.
 
@@ -140,6 +141,11 @@ def deflated_sharpe_ratio(
     if n_trials < 1 or n_observations < 2:
         return 0.0
 
+    # 1. Converter Sharpes anualizados para a frequência da amostra (diária)
+    # Obs: Assume-se raiz quadrada do tempo (iid) para a conversão de frequência
+    sr_daily = observed_sharpe / math.sqrt(periods_per_year)
+    benchmark_daily = sharpe_benchmark / math.sqrt(periods_per_year)
+
     # Expected maximum Sharpe from n_trials independent normal draws.
     # E[max(SR)] = SR_benchmark + σ(SR) * E[max(Z_1, ..., Z_n)]
     # where E[max(Z)] uses the Euler-Mascheroni approximation:
@@ -156,25 +162,24 @@ def deflated_sharpe_ratio(
 
     # Variance of the Sharpe estimator (Lo, 2002)
     # V[SR] ≈ (1 + 0.5*SR^2 - skew*SR + (kurt-3)/4 * SR^2) / T
-    sr = observed_sharpe
-    v_sr = (
+    # 2. Calcular a variância baseada no Sharpe DIÁRIO
+    v_sr_daily = (
         1.0
-        + 0.5 * sr * sr
-        - skewness * sr
-        + (kurtosis - 3.0) / 4.0 * sr * sr
+        + 0.5 * sr_daily * sr_daily
+        - skewness * sr_daily
+        + (kurtosis - 3.0) / 4.0 * sr_daily * sr_daily
     ) / n_observations
 
-    if v_sr <= 0:
-        e_max_sr = sharpe_benchmark + e_max_z
-        return 1.0 if observed_sharpe > e_max_sr else 0.0
+    if v_sr_daily <= 0:
+        e_max_sr_daily = benchmark_daily + e_max_z
+        return 1.0 if sr_daily > e_max_sr_daily else 0.0
 
-    std_sr = math.sqrt(v_sr)
+    std_sr_daily = math.sqrt(v_sr_daily)
 
-    # E[max SR] = benchmark + σ(SR) * E[max(Z)]
-    e_max_sr = sharpe_benchmark + std_sr * e_max_z
+    # 3. Z-score na frequência correta
+    e_max_sr_daily = benchmark_daily + std_sr_daily * e_max_z
+    z_score = (sr_daily - e_max_sr_daily) / std_sr_daily
 
-    # PSR = Φ((SR_obs - E[max SR]) / σ(SR))
-    z_score = (observed_sharpe - e_max_sr) / std_sr
     return _normal_cdf(z_score)
 
 
@@ -236,8 +241,10 @@ def _compute_sharpe(
     if n < 2:
         return 0.0
 
-    rf_daily = rf / trading_days
+    # CORREÇÃO: Equivalência geométrica em vez de divisão linear
+    rf_daily = (1.0 + rf) ** (1.0 / trading_days) - 1.0
     excess = [r - rf_daily for r in returns]
+    
     mean_ex = sum(excess) / n
     var = sum((e - mean_ex) ** 2 for e in excess) / (n - 1)
     if var <= 0:
@@ -328,6 +335,7 @@ class CPCVParameterValidator:
         n_splits: int = 6,
         n_test_groups: int = 2,
         embargo_pct: float = 0.01,
+        purge_days: int = 5,  # NOVO PARÂMETRO: h + input_size - 1
         acceptance_pct: float = _DEFAULT_ACCEPTANCE_PCT,
     ) -> None:
         self.ohlcv = ohlcv
@@ -336,6 +344,7 @@ class CPCVParameterValidator:
         self.n_splits = n_splits
         self.n_test_groups = n_test_groups
         self.embargo_pct = embargo_pct
+        self.purge_days = purge_days # NOVO ATRIBUTO
         self.acceptance_pct = acceptance_pct
 
         # Unique sorted trading dates across all tickers
@@ -421,17 +430,26 @@ class CPCVParameterValidator:
         """
         test_indices: set[int] = set()
         embargo_indices: set[int] = set()
+        purge_indices: set[int] = set() # NOVO: Set para as datas de purge
 
         for g in test_groups:
             start, end = self._split_boundaries[g]
+            
+            # Adiciona os índices do bloco de teste
             for idx in range(start, end + 1):
                 test_indices.add(idx)
-            # Embargo after each test block
+                
+            # Embargo: dias DEPOIS do bloco de teste
             for idx in range(end + 1, min(end + 1 + self._embargo_days, len(self._trading_dates))):
                 embargo_indices.add(idx)
+                
+            # Purge: dias ANTES do bloco de teste para evitar sobreposição do label
+            for idx in range(max(0, start - self.purge_days), start):
+                purge_indices.add(idx)
 
+        # Remove teste, embargo e purge do conjunto de treino
         train_indices = sorted(
-            set(range(len(self._trading_dates))) - test_indices - embargo_indices
+            set(range(len(self._trading_dates))) - test_indices - embargo_indices - purge_indices
         )
         return [self._trading_dates[i] for i in train_indices]
 
@@ -618,6 +636,7 @@ class CPCVParameterValidator:
             skewness=skew,
             kurtosis=kurt,
             sharpe_benchmark=baseline_sharpe,
+            periods_per_year=config.trading_days_per_year, # PASSE O PARÂMETRO AQUI
         )
 
         accepted = (
@@ -648,6 +667,7 @@ class CPCVParameterValidator:
                 "n_paths": n_paths,
                 "n_positive": n_positive,
                 "n_trials": n_trials,
+                "purge_days": self.purge_days, # <- NOVO
                 "embargo_days": self._embargo_days,
                 "paths": [list(p) for p in self._paths],
                 "baseline_sharpe": baseline_sharpe,

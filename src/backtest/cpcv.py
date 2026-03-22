@@ -379,7 +379,8 @@ class CPCVBacktester:
         if len(returns) < 2:
             return 0.0
 
-        rf_per_period = rf / periods_per_year
+        # CORREÇÃO: Equivalência geométrica em vez de divisão linear
+        rf_per_period = (1.0 + rf) ** (1.0 / periods_per_year) - 1.0
         excess = [r - rf_per_period for r in returns]
 
         mean_excess = sum(excess) / len(excess)
@@ -546,6 +547,10 @@ class CPCVBacktester:
         total_cost_sum = 0.0
         prev_position = 0  # 0=flat, 1=long
 
+        # Taxa livre de risco proporcional ao horizonte h
+        periods_per_year = _ANNUALISATION_FACTOR / self.h
+        rf_per_period = (1.0 + self.rf) ** (1.0 / periods_per_year) - 1.0
+
         for block in blocks:
             block_len = len(block)
             block_slice = test_sorted.slice(row_offset, block_len)
@@ -586,12 +591,34 @@ class CPCVBacktester:
                     n_trades += 1
                     total_cost_sum += trade_cost
 
-                strategy_return = (actual_return if signal == 1 else 0.0) - trade_cost
+                # Se comprado, ganha o retorno do ativo. Se flat, ganha a taxa livre de risco.
+                gross_return = actual_return if signal == 1 else rf_per_period
+                strategy_return = gross_return - trade_cost
                 strategy_returns.append(strategy_return)
                 cumulative.append(cumulative[-1] * (1.0 + strategy_return))
 
                 prev_position = signal
                 i += self.h  # Non-overlapping
+            
+            # NOVO: Se o bloco terminou posicionado, cobra o custo da saída forçada
+            if has_costs and prev_position != 0:
+                trade_cost = fixed_cost
+                if has_market_impact and volumes is not None and avg_volume > 0:
+                    # Estima impacto usando o volume da entrada correspondente
+                    last_vol = volumes[max(0, i - self.h)] 
+                    relative_vol = last_vol / avg_volume
+                    impact = (self.costs.market_impact_bps / 10_000) / math.sqrt(max(relative_vol, 1e-9))
+                    trade_cost += impact
+                
+                n_trades += 1
+                total_cost_sum += trade_cost
+                
+                # Desconta o custo do último retorno gerado no bloco
+                if strategy_returns:
+                    strategy_returns[-1] -= trade_cost
+                    # Recalcula a última equidade
+                    prev_cum = cumulative[-2] if len(cumulative) > 1 else 1.0
+                    cumulative[-1] = prev_cum * (1.0 + strategy_returns[-1])
 
         if len(strategy_returns) < _MIN_RETURNS_WARNING:
             logger.warning(

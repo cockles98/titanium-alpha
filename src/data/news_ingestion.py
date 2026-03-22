@@ -48,16 +48,98 @@ RSS_FEEDS: dict[str, str] = {
     ),
 }
 
+# Individual stocks FIRST so _match_ticker tags the specific company,
+# not a broad index.  Indices/ETFs at the end.
 TICKER_KEYWORDS: dict[str, list[str]] = {
-    "SPY": ["S&P 500", "S&P500", "SPY", "index fund"],
-    "NVDA": ["NVDA", "Nvidia", "NVIDIA", "Jensen Huang"],
+    # ── Technology ─────────────────────────────────────────────
     "AAPL": ["AAPL", "Apple", "iPhone", "Tim Cook"],
-    "QQQ": ["QQQ", "Nasdaq", "NASDAQ", "Invesco"],
+    "MSFT": ["MSFT", "Microsoft", "Azure", "Satya Nadella"],
+    "GOOG": ["GOOG", "Alphabet", "Google", "Sundar Pichai"],
+    "AMZN": ["AMZN", "Amazon", "AWS", "Andy Jassy"],
+    "META": ["META", "Meta Platforms", "Facebook", "Mark Zuckerberg", "Instagram"],
+    "NVDA": ["NVDA", "Nvidia", "NVIDIA", "Jensen Huang"],
+    "TSLA": ["TSLA", "Tesla", "Elon Musk"],
+    "AVGO": ["AVGO", "Broadcom"],
+    "CRM": ["Salesforce", "Marc Benioff"],
+    "AMD": ["AMD", "Advanced Micro Devices", "Lisa Su"],
+    # ── Financials ─────────────────────────────────────────────
+    "JPM": ["JPM", "JPMorgan", "JP Morgan", "Jamie Dimon"],
+    "BAC": ["Bank of America"],
+    "GS": ["Goldman Sachs", "David Solomon"],
+    "MS": ["Morgan Stanley", "James Gorman"],
+    "WFC": ["WFC", "Wells Fargo"],
+    "BLK": ["BlackRock", "Larry Fink"],
+    "AXP": ["AXP", "American Express", "Amex"],
+    "C": ["Citigroup", "Citibank", "Jane Fraser"],
+    # ── Healthcare ─────────────────────────────────────────────
+    "UNH": ["UNH", "UnitedHealth"],
+    "JNJ": ["JNJ", "Johnson & Johnson", "Johnson and Johnson"],
+    "LLY": ["Eli Lilly"],
+    "PFE": ["PFE", "Pfizer"],
+    "ABBV": ["ABBV", "AbbVie"],
+    "MRK": ["MRK", "Merck"],
+    "TMO": ["TMO", "Thermo Fisher"],
+    # ── Consumer ───────────────────────────────────────────────
+    "PG": ["Procter & Gamble", "Procter and Gamble"],
+    "KO": ["Coca-Cola", "Coca Cola"],
+    "PEP": ["PEP", "PepsiCo", "Pepsi"],
+    "COST": ["Costco"],
+    "WMT": ["WMT", "Walmart"],
+    "HD": ["Home Depot"],
+    "MCD": ["MCD", "McDonald's", "McDonalds"],
+    # ── Energy ─────────────────────────────────────────────────
+    "XOM": ["XOM", "ExxonMobil", "Exxon Mobil", "Exxon"],
+    "CVX": ["CVX", "Chevron"],
+    "COP": ["ConocoPhillips", "Conoco Phillips"],
+    "SLB": ["SLB", "Schlumberger"],
+    # ── Industrials ────────────────────────────────────────────
+    "CAT": ["Caterpillar"],
+    "HON": ["Honeywell"],
+    "UPS": ["United Parcel"],
+    "BA": ["Boeing"],
+    "GE": ["GE Aerospace", "General Electric"],
+    "RTX": ["RTX", "Raytheon"],
+    # ── Utilities & REITs ──────────────────────────────────────
+    "NEE": ["NextEra Energy", "NextEra"],
+    "DUK": ["Duke Energy"],
+    "AMT": ["AMT", "American Tower"],
+    "PLD": ["PLD", "Prologis"],
+    # ── Communication ──────────────────────────────────────────
+    "DIS": ["Disney", "Walt Disney"],
+    "NFLX": ["NFLX", "Netflix"],
+    "CMCSA": ["CMCSA", "Comcast"],
+    # ── Materials ──────────────────────────────────────────────
+    "LIN": ["Linde"],
+    "APD": ["APD", "Air Products"],
+    "NEM": ["NEM", "Newmont"],
+    # ── Indices / ETFs (last — so specific stocks match first) ─
+    "SPY": ["S&P 500", "S&P500", "SPY"],
 }
+
+# Sector-based queries for NewsAPI (covers all 52 tickers)
+_NEWSAPI_QUERIES: list[str] = [
+    "stock market Wall Street",
+    "S&P 500 SPY",
+    "Apple Microsoft Google Alphabet",
+    "Amazon Meta Facebook Nvidia",
+    "Tesla AMD Broadcom Salesforce",
+    "JPMorgan Goldman Sachs Morgan Stanley",
+    "Bank of America Wells Fargo BlackRock Citigroup",
+    "UnitedHealth Pfizer Eli Lilly AbbVie Merck",
+    "Walmart Costco Home Depot McDonald's PepsiCo",
+    "ExxonMobil Chevron Boeing Caterpillar",
+    "Disney Netflix Comcast",
+    "NextEra Duke Energy Prologis Newmont",
+]
 
 
 def _match_ticker(title: str, summary: str) -> str | None:
     """Match a news article to a ticker based on keyword presence.
+
+    Uses keyword-hit counting so that the ticker with the most
+    evidence wins, reducing positional bias from dict iteration
+    order.  Ties are broken by ``TICKER_KEYWORDS`` insertion order
+    (individual stocks before indices).
 
     Args:
         title: Article title.
@@ -67,11 +149,14 @@ def _match_ticker(title: str, summary: str) -> str | None:
         Matched ticker symbol or None if no match.
     """
     combined = f"{title} {summary}".upper()
+    best_ticker: str | None = None
+    best_count = 0
     for ticker, keywords in TICKER_KEYWORDS.items():
-        for kw in keywords:
-            if kw.upper() in combined:
-                return ticker
-    return None
+        count = sum(1 for kw in keywords if kw.upper() in combined)
+        if count > best_count:
+            best_count = count
+            best_ticker = ticker
+    return best_ticker
 
 
 def _clean_html(raw: str) -> str:
@@ -144,15 +229,8 @@ class NewsIngester:
             return []
 
         articles: list[dict[str, str | None]] = []
-        queries = [
-            "stock market",
-            "NVDA NVIDIA",
-            "AAPL Apple",
-            "SPY S&P 500",
-            "QQQ Nasdaq",
-        ]
 
-        for query in queries:
+        for query in _NEWSAPI_QUERIES:
             for attempt in range(1, self.max_retries + 1):
                 try:
                     resp = requests.get(
@@ -390,6 +468,10 @@ class NewsIngester:
 def _parse_date(raw: str) -> date | None:
     """Parse various date formats into a date object.
 
+    Tries ``datetime.fromisoformat`` first (handles fractional seconds
+    common in NewsAPI payloads, e.g. ``2024-01-15T10:30:00.123Z``),
+    then falls back to ``strptime`` for RSS-style RFC 822 dates.
+
     Args:
         raw: Raw date string from API or RSS.
 
@@ -399,16 +481,27 @@ def _parse_date(raw: str) -> date | None:
     if not raw:
         return None
 
-    formats = [
-        "%Y-%m-%dT%H:%M:%SZ",
-        "%Y-%m-%dT%H:%M:%S%z",
+    raw = raw.strip()
+
+    # ISO 8601 — handles fractional seconds that strptime can't
+    # (Python 3.10 fromisoformat doesn't accept "Z"; normalize to +00:00)
+    try:
+        normalized = raw.replace("Z", "+00:00") if raw.endswith("Z") else raw
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.date()
+    except (ValueError, TypeError):
+        pass
+
+    # RSS-style RFC 822 dates
+    rss_formats = [
         "%a, %d %b %Y %H:%M:%S %Z",
         "%a, %d %b %Y %H:%M:%S %z",
-        "%Y-%m-%d",
     ]
-    for fmt in formats:
+    for fmt in rss_formats:
         try:
-            dt = datetime.strptime(raw.strip(), fmt)
+            dt = datetime.strptime(raw, fmt)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt.date()

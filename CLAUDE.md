@@ -43,19 +43,20 @@ docs: apenas documentação
 
 ## Contexto financeiro importante
 - Universo: 52 large caps US + SPY benchmark (config/tickers.json)
-- Período de dados: últimos 5 anos (OHLCV diário via yfinance)
+- Período de dados: últimos 12 anos (OHLCV diário via yfinance, ~3015 rows/ticker)
 - Benchmark: SPY buy-and-hold
 - Métricas-chave: Sharpe Ratio anualizado (rf=0.05), Max Drawdown, CAGR
 
-## Configuração validada (CPCV-OOS)
-- NaiveModelFactory(lookback=1) — momentum ultra-short-term
-- rebalance_every=1 (diário), retrain_every=126 (semestral)
-- lookback_days=63 (~3 meses de covariância)
-- target_vol=0.15, vol_lookback=21
-- HRPConfig: confidence_tilt_cap=1.0, max_weight=0.15
+## Configuração validada (Walk-Forward Benchmark — CPCV-OOS Tier 1+2)
+- NaiveModelFactory(lookback=5) — 5-day momentum
+- rebalance_every=13 (~2.5 semanas), retrain_every=126 (semestral)
+- lookback_days=756 (~3 anos de covariância)
+- target_vol=None (desabilitado — hurts performance)
+- HRPConfig: linkage=ward, shrinkage=True (Ledoit-Wolf), max_weight=min(0.25, 2/n)
 - TransactionCosts: slippage=5bps, commission=10bps
-- min_rebalance_delta=0.01
-- Resultados: Sharpe ~2.7, CAGR ~45%, MaxDD ~-20%
+- min_rebalance_delta=0.02
+- Baseline anterior: Sharpe ~0.61, CAGR ~14.6%, MaxDD ~-31.7%
+- Champion CPCV-OOS: Sharpe ~0.83 (pendente confirmação walk-forward completo)
 
 ## Limitação conhecida: gap backtest-produção
 O Sharpe validado (~2.7) reflete o sinal PatchTST sozinho. O pipeline de produção
@@ -103,7 +104,29 @@ descartando o prob_up do PatchTST. Ver docs/design_gap_backtest_vs_production.md
 - Bug fix: prob_up discreto → CDF interpolation contínua
 - Bug fix: fan chart sort alfabético → sort por nível de quantil
 
-**Status atual:** 720+ testes passando | Fases 1-5 completas
+### Fase 6 — Fixes Quantitativos + Redesign DecisionEngine (Sessão 36)
+- Conversão geométrica de rf em todo o pipeline (benchmark_metrics, cpcv, cpcv_oos, walk_forward)
+- benchmark_metrics: drawdown peak inicia em 1.0, monthly returns ordenado, IR corrigido
+- cpcv: posição flat ganha rf, custo de saída forçada no fim do bloco
+- cpcv_oos: DSR converte Sharpe anualizado→diário antes de calcular, purge_days no validator
+- walk_forward: início 100% caixa (institucional), vol targeting ex-ante (pré-alocação),
+  bankruptcy safeguard, killswitch preserva cash, remoção de tickers duplicados
+- HRP: tilt sum-preserving (média ponderada como ponto neutro), waterfilling optimizer
+  substituiu clip_and_normalise, turnover_threshold=0.02, previous_weights no optimize()
+- DecisionEngine: modelo 3-tier (BUY=HRP, HOLD=HRP*conf, SELL=0), cash implícito,
+  fallback PatchTST (predictions.parquet), classificação BUY/HOLD/SELL,
+  HRP roda apenas no subset investable, metadata v1.1
+
+### Fase 7 — Fine-Tuning + Data Integrity (Sessões 37-38)
+- PatchTST: CDF rearrangement para monotonicity de quantis, NaN guards em predict
+- Ingestão: corrigido bug thread-safety do yf.download() → yf.Ticker().history()
+  (22 de 52 tickers tinham dados idênticos aos vizinhos adjacentes em tickers.json)
+- DB limpo e re-populado com 12 anos de dados (2014-2026) via API thread-safe
+- SPY benchmark adicionado explicitamente à ingestão (não está na lista de tickers)
+- Testes: 761 passando, 5 pré-existentes corrigidos (config desatualizada, rf geométrico)
+- Benchmark com dados limpos: Sharpe=0.611, CAGR=14.62%, MaxDD=-31.69%, Alpha=0.024
+
+**Status atual:** 761 testes passando | Fases 1-7 completas
 
 ## O que NUNCA fazer
 - Nunca hardcode API keys (usar .env + python-dotenv)

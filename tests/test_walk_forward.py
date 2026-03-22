@@ -1294,7 +1294,8 @@ class TestDrawdownKillswitch:
         result = bt.run(ohlcv, ["A", "B", "C"], "SPY", NaiveModelFactory())
 
         # Find days where return equals daily rf (killswitch active)
-        daily_rf = rf / cfg.trading_days_per_year
+        # Walk-forward uses geometric compounding: (1+rf)^(1/252) - 1
+        daily_rf = (1.0 + rf) ** (1.0 / cfg.trading_days_per_year) - 1.0
         port_rets = result.daily_returns["portfolio_return"].to_list()
         found_rf_carry = False
         for ret in port_rets:

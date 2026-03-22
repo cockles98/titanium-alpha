@@ -11,6 +11,7 @@ LangGraph agent layer, not by PatchTST directly.
 from __future__ import annotations
 
 import json
+import math
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -76,13 +77,6 @@ class TitaniumForecaster:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _validate_df(df: pl.DataFrame) -> None:
-        """Raise ``ValueError`` if *df* is missing required columns."""
-        missing = [c for c in _REQUIRED_COLS if c not in df.columns]
-        if missing:
-            raise ValueError(f"Missing required columns: {missing}")
 
     @staticmethod
     def _prepare_df(df: pl.DataFrame) -> pl.DataFrame:
@@ -156,22 +150,33 @@ class TitaniumForecaster:
         Returns:
             Probability in [0, 1] that the price exceeds ``close``.
         """
-        # Sort by predicted value (should already be monotone, but be safe)
-        pairs = sorted(zip(q_values, q_levels))
-        vals = [v for v, _ in pairs]
-        probs = [p for _, p in pairs]
+        # Sort values and levels independently to guarantee CDF monotonicity.
+        # MQLoss does not enforce monotone quantile predictions, so crossing
+        # can occur (e.g. Q(0.25) > Q(0.5)).  The rearrangement approach maps
+        # the i-th smallest predicted value to the i-th smallest quantile
+        # level, producing the optimal monotone CDF estimate.
+        vals = sorted(q_values)
+        probs = sorted(q_levels)
 
-        # close below all quantiles → P(up) > highest quantile level
-        if close <= vals[0]:
-            return 1.0 - probs[0] / 2.0  # conservative: midpoint of [0, q_min]
+        # close strictly below all quantile predictions
+        if close < vals[0]:
+            return 1.0 - probs[0] / 2.0  # midpoint of [0, q_min]
 
-        # close above all quantiles → P(up) < 1 - highest quantile level
-        if close >= vals[-1]:
+        # close strictly above all quantile predictions
+        if close > vals[-1]:
             return (1.0 - probs[-1]) / 2.0  # midpoint of [q_max, 1]
 
-        # Linear interpolation between adjacent quantile brackets
+        # Exact match: close equals one or more quantile predictions.
+        # Use the max matching quantile level as CDF — conservative when
+        # multiple quantiles collapse (model uncertainty → less conviction).
+        matching = [p for v, p in zip(vals, probs) if v == close]
+        if matching:
+            return 1.0 - max(matching)
+
+        # Strict linear interpolation (division by zero impossible here
+        # because close ≠ any val, so adjacent equal vals can't bracket it)
         for i in range(len(vals) - 1):
-            if vals[i] <= close <= vals[i + 1]:
+            if vals[i] < close < vals[i + 1]:
                 frac = (close - vals[i]) / (vals[i + 1] - vals[i])
                 cdf_at_close = probs[i] + frac * (probs[i + 1] - probs[i])
                 return 1.0 - cdf_at_close
@@ -223,11 +228,19 @@ class TitaniumForecaster:
                     col_to_level[c] = 0.5
                 elif "-lo-" in c:
                     # e.g. "PatchTST-lo-80.0" → quantile = (100 - 80) / 200 = 0.1
-                    pct = float(c.split("-lo-")[1])
+                    try:
+                        pct = float(c.split("-lo-")[1])
+                    except ValueError:
+                        logger.warning("Skipping unparseable column: {}", c)
+                        continue
                     col_to_level[c] = (100.0 - pct) / 200.0
                 elif "-hi-" in c:
                     # e.g. "PatchTST-hi-50.0" → quantile = (100 + 50) / 200 = 0.75
-                    pct = float(c.split("-hi-")[1])
+                    try:
+                        pct = float(c.split("-hi-")[1])
+                    except ValueError:
+                        logger.warning("Skipping unparseable column: {}", c)
+                        continue
                     col_to_level[c] = (100.0 + pct) / 200.0
 
         # Detect median column
@@ -252,10 +265,33 @@ class TitaniumForecaster:
                 logger.warning("No last close for ticker {}, skipping", ticker)
                 continue
 
-            q_values = [last_row[col][0] for col in q_cols_present if col in last_row.columns]
-            q_levels = [col_to_level[col] for col in q_cols_present if col in last_row.columns and col in col_to_level]
-            if not q_values or len(q_values) != len(q_levels):
+            recognized_cols = [
+                col for col in q_cols_present
+                if col in last_row.columns and col in col_to_level
+            ]
+            if not recognized_cols:
+                logger.warning(
+                    "Ticker {} skipped: no recognized quantile columns", ticker,
+                )
                 continue
+
+            q_values_raw = [last_row[col][0] for col in recognized_cols]
+            q_levels_raw = [col_to_level[col] for col in recognized_cols]
+
+            # Filter non-finite predictions (NeuralForecast can emit NaN/inf
+            # under numerical instability; sorted() is undefined with NaN).
+            valid = [
+                (v, l) for v, l in zip(q_values_raw, q_levels_raw)
+                if v is not None and math.isfinite(v)
+            ]
+            if not valid:
+                logger.warning(
+                    "Ticker {} skipped: all quantile predictions non-finite",
+                    ticker,
+                )
+                continue
+            q_values = [v for v, _ in valid]
+            q_levels = [l for _, l in valid]
 
             prob_up = TitaniumForecaster._interpolate_prob_up(
                 q_levels, q_values, current_close
@@ -263,7 +299,10 @@ class TitaniumForecaster:
 
             if median_col and median_col in last_row.columns:
                 median_pred = last_row[median_col][0]
-                exp_ret = (median_pred - current_close) / current_close
+                if median_pred is not None and math.isfinite(median_pred):
+                    exp_ret = (median_pred - current_close) / current_close
+                else:
+                    exp_ret = 0.0
             else:
                 exp_ret = 0.0
 
@@ -296,10 +335,14 @@ class TitaniumForecaster:
         prepared = self._prepare_df(df)
 
         min_rows = self.input_size + val_size
-        if prepared.height < min_rows:
+        ticker_counts = prepared.group_by("ticker").agg(pl.len().alias("n"))
+        short_tickers = ticker_counts.filter(pl.col("n") < min_rows)
+        if short_tickers.height > 0:
+            examples = short_tickers.head(5).to_dicts()
             raise ValueError(
-                f"Need at least {min_rows} rows, got {prepared.height}. "
-                f"(input_size={self.input_size} + val_size={val_size})"
+                f"Tickers with fewer than {min_rows} rows "
+                f"(input_size={self.input_size} + val_size={val_size}): "
+                f"{examples}"
             )
 
         model = self._build_model()
@@ -345,15 +388,20 @@ class TitaniumForecaster:
         logger.info("Predict: {} rows generated", forecast.height)
         return forecast
 
-    def predict_proba(self, df: pl.DataFrame) -> pl.DataFrame:
+    def predict_proba(
+        self,
+        df: pl.DataFrame,
+        forecast: pl.DataFrame | None = None,
+    ) -> pl.DataFrame:
         """Compute probability of price increase per ticker.
 
-        Runs ``predict`` and then compares the quantile forecasts at
-        horizon h against the last known close price to estimate
-        the probability of an upward move.
+        Compares quantile forecasts at horizon h against the last known
+        close price to estimate the probability of an upward move.
 
         Args:
             df: DataFrame with at least date, ticker, close columns.
+            forecast: Pre-computed forecast DataFrame. If None, calls
+                ``predict(df=df)`` internally.
 
         Returns:
             DataFrame with columns: ``ticker``, ``prob_up``,
@@ -366,7 +414,8 @@ class TitaniumForecaster:
             ticker_data = prepared.filter(pl.col("ticker") == ticker).sort("date")
             last_closes[ticker] = ticker_data["close"][-1]
 
-        forecast = self.predict(df=df)
+        if forecast is None:
+            forecast = self.predict(df=df)
 
         return self._compute_prob_up(forecast, last_closes, self.quantiles)
 
