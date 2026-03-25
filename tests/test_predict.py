@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import polars as pl
 import pytest
@@ -242,9 +242,10 @@ class TestRun:
         features = _make_ohlcv(200, ["SPY"])  # Simplified, just needs same structure
         mock_features.return_value = features
 
-        # Mock forecaster
+        # Mock forecaster — load raises so pipeline trains from scratch
         mock_fc = MagicMock()
         mock_forecaster_class.return_value = mock_fc
+        mock_forecaster_class.load.side_effect = FileNotFoundError("no checkpoint")
 
         last_close = features.filter(pl.col("ticker") == "SPY")["close"][-1]
         mock_fc.h = 5
@@ -289,6 +290,7 @@ class TestRun:
 
         mock_fc = MagicMock()
         mock_forecaster_class.return_value = mock_fc
+        mock_forecaster_class.load.side_effect = FileNotFoundError("no checkpoint")
         mock_fc.h = 5
         mock_fc.predict.return_value = pl.DataFrame(
             {
@@ -328,6 +330,7 @@ class TestRun:
 
         mock_fc = MagicMock()
         mock_forecaster_class.return_value = mock_fc
+        mock_forecaster_class.load.side_effect = FileNotFoundError("no checkpoint")
         mock_fc.h = 5
         mock_fc.predict.return_value = pl.DataFrame(
             {"unique_id": ["SPY"], "ds": [0], "PatchTST-q0.5": [100.0]}
@@ -346,7 +349,9 @@ class TestRun:
         p.load_ohlcv = MagicMock(return_value=ohlcv)
         p.run()
 
-        mock_forecaster_class.assert_called_once_with(max_steps=100)
+        # Called twice: once for get_params(), once for training
+        calls = mock_forecaster_class.call_args_list
+        assert all(c == call(max_steps=100) for c in calls)
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +375,7 @@ class TestOutputReload:
 
         mock_fc = MagicMock()
         mock_forecaster_class.return_value = mock_fc
+        mock_forecaster_class.load.side_effect = FileNotFoundError("no checkpoint")
         mock_fc.h = 5
         mock_fc.predict.return_value = pl.DataFrame(
             {

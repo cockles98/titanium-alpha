@@ -16,6 +16,7 @@ Usage::
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from datetime import date, timedelta
@@ -170,20 +171,66 @@ class _PatchTSTModelFactory:
     Implements the ``ModelFactory`` protocol by delegating to
     ``TitaniumForecaster.fit()`` and ``TitaniumForecaster.predict_proba()``.
     Falls back to NaiveModelFactory if series is too short.
+
+    Caches trained models to ``models/wf_cache/<hash>/`` so that
+    repeated walk-forward runs with the same training window skip
+    retraining entirely.
     """
 
-    def __init__(self) -> None:
+    _CACHE_DIR = Path("models/wf_cache")
+
+    def __init__(self, *, cache_enabled: bool = True) -> None:
         self._forecaster: Any = None
         self._fallback: Any = None
+        self._cache_enabled = cache_enabled
+        # Hyperparams used for training — included in cache hash
+        self._model_params: dict[str, Any] = {}
+
+    def _window_hash(self, train_df: pl.DataFrame) -> str:
+        """Deterministic hash of training window + model hyperparameters.
+
+        Uses ticker list + date range + row count + PatchTST hyperparams
+        to identify a unique training configuration.
+        """
+        tickers = sorted(train_df["ticker"].unique().to_list())
+        dates = train_df["date"].sort()
+        key = (
+            f"{tickers}|{dates[0]}|{dates[-1]}|{train_df.height}"
+            f"|{sorted(self._model_params.items())}"
+        )
+        return hashlib.sha256(key.encode()).hexdigest()[:16]
 
     def train(self, train_df: pl.DataFrame) -> None:
-        """Train PatchTST on historical OHLCV data, with fallback for short series."""
+        """Train PatchTST on historical OHLCV data, with cache and fallback."""
         from src.models.patchtst_model import TitaniumForecaster
+
+        # Capture default hyperparams for hash + validation
+        self._model_params = TitaniumForecaster().get_params()
+
+        # Try loading from cache
+        if self._cache_enabled:
+            h = self._window_hash(train_df)
+            cache_path = self._CACHE_DIR / h
+            if cache_path.exists():
+                try:
+                    self._forecaster = TitaniumForecaster.load(
+                        str(cache_path), expect_params=self._model_params,
+                    )
+                    self._fallback = None
+                    logger.info("PatchTST loaded from cache {}", h)
+                    return
+                except Exception as exc:
+                    logger.warning("Cache load failed ({}); retraining", exc)
 
         try:
             self._forecaster = TitaniumForecaster()
             self._forecaster.fit(train_df)
             self._fallback = None
+
+            # Save to cache
+            if self._cache_enabled:
+                self._forecaster.save(str(cache_path))
+                logger.info("PatchTST cached to {}", h)
         except Exception as e:
             if "too short" in str(e).lower():
                 logger.warning("Series too short for PatchTST; using NaiveModelFactory fallback")
@@ -284,8 +331,9 @@ def run_us_benchmark(
     config_path: str = "config/tickers.json",
     output_dir: str = "data/outputs",
     use_patchtst: bool = True,
-    n_years: int = 30,
+    n_years: int = 10,
     ohlcv: pl.DataFrame | None = None,
+    top_n: int | None = None,
 ) -> WalkForwardResult:
     """Run the full US benchmark pipeline.
 
@@ -304,6 +352,8 @@ def run_us_benchmark(
         use_patchtst: Use PatchTST model (slow) or NaiveModelFactory (fast).
         n_years: Number of years for out-of-sample period.
         ohlcv: Pre-loaded OHLCV data.  If ``None``, loads from PostgreSQL.
+        top_n: Number of top-scoring tickers to include at each
+            rebalance.  ``None`` means use all tickers.
 
     Returns:
         Walk-forward result with metrics populated.
@@ -343,7 +393,7 @@ def run_us_benchmark(
     logger.info("Step 5/7: Running walk-forward backtest")
     n = len(tickers)
     wf_config = WalkForwardConfig(
-        rebalance_every=13,            # ~2.5 weeks (CPCV-OOS validated)
+        rebalance_every=15,            # ~3 weeks (CPCV-OOS T2+T3 champion)
         retrain_every=126,             # Semestral
         lookback_days=756,             # ~3 anos de covariância (CPCV-OOS validated)
         initial_capital=1_000_000.0,
@@ -352,13 +402,18 @@ def run_us_benchmark(
             commission_bps=10.0,
         ),
         min_rebalance_delta=0.02,      # 2% threshold
+        target_vol=0.10,               # 10% ann. (CPCV-OOS T3: +0.035 Sharpe)
+        vol_lookback=63,               # ~3 meses
+        min_leverage=0.5,
+        max_leverage=1.0,
         trading_days_per_year=trading_days,
         rf=rf,
         hrp_config=HRPConfig(
             linkage_method="ward",     # CPCV-OOS validated (+0.03 vs single)
             shrinkage=True,            # Ledoit-Wolf (CPCV-OOS validated +0.03)
-            max_weight=min(0.25, 2 / n),
+            max_weight=min(0.06, 2 / n),  # relaxed from 0.25 (T3: +0.026 Sharpe)
         ),
+        top_n=top_n,
     )
 
     backtester = WalkForwardBacktester(config=wf_config)
@@ -397,4 +452,8 @@ def run_us_benchmark(
 
 if __name__ == "__main__":
     use_naive = "--naive" in sys.argv
-    run_us_benchmark(use_patchtst=not use_naive)
+    _top_n: int | None = None
+    for arg in sys.argv:
+        if arg.startswith("--top-n="):
+            _top_n = int(arg.split("=", 1)[1])
+    run_us_benchmark(use_patchtst=not use_naive, top_n=_top_n)

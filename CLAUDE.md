@@ -47,22 +47,23 @@ docs: apenas documentação
 - Benchmark: SPY buy-and-hold
 - Métricas-chave: Sharpe Ratio anualizado (rf=0.05), Max Drawdown, CAGR
 
-## Configuração validada (Walk-Forward Benchmark — CPCV-OOS Tier 1+2)
-- NaiveModelFactory(lookback=5) — 5-day momentum
-- rebalance_every=13 (~2.5 semanas), retrain_every=126 (semestral)
+## Configuração validada (Walk-Forward Benchmark — CPCV-OOS 3-Tier, 547 configs)
+- NaiveModelFactory(lookback=5) — 5-day momentum (proxy para CPCV-OOS)
+- rebalance_every=15 (~3 semanas), retrain_every=126 (semestral)
 - lookback_days=756 (~3 anos de covariância)
-- target_vol=None (desabilitado — hurts performance)
-- HRPConfig: linkage=ward, shrinkage=True (Ledoit-Wolf), max_weight=min(0.25, 2/n)
+- target_vol=0.10 (10% ann., vol_lookback=63, min_leverage=0.5, max_leverage=1.0)
+- HRPConfig: linkage=ward, shrinkage=True (Ledoit-Wolf), max_weight=min(0.06, 2/n)
 - TransactionCosts: slippage=5bps, commission=10bps
 - min_rebalance_delta=0.02
-- Baseline anterior: Sharpe ~0.61, CAGR ~14.6%, MaxDD ~-31.7%
-- Champion CPCV-OOS: Sharpe ~0.83 (pendente confirmação walk-forward completo)
+- top_n=None, killswitch=None (ambos prejudiciais)
+- Baseline pré-tuning: Sharpe=0.611, CAGR=14.62%, MaxDD=-31.69%, Beta=0.842
+- Recorde walk-forward (pós fine-tuning): Sharpe=0.712, CAGR=13.35%, MaxDD=-18.43%, Beta=0.532
+- Análise completa: data/outputs/validation_3tier_analysis.md
 
 ## Limitação conhecida: gap backtest-produção
-O Sharpe validado (~2.7) reflete o sinal PatchTST sozinho. O pipeline de produção
-(make decide) usa debate LangGraph, que nunca foi backtestado. Quando os agentes
-falham, o sistema cai para BUY com confidence=0.5 para todos os tickers,
-descartando o prob_up do PatchTST. Ver docs/design_gap_backtest_vs_production.md.
+O pipeline de produção (make decide) usa debate LangGraph, que nunca foi backtestado.
+Quando os agentes falham, o sistema cai para fallback PatchTST (predictions.parquet)
+ou BUY com confidence=0.5. Ver docs/design_gap_backtest_vs_production.md.
 
 ## Histórico de implementação
 
@@ -98,7 +99,7 @@ descartando o prob_up do PatchTST. Ver docs/design_gap_backtest_vs_production.md
 - CPCV-OOS: validação de parâmetros com Deflated Sharpe Ratio
 - Fixes: log returns fill_null, NaiveModelFactory scaling
 - HRP: Ledoit-Wolf shrinkage, Ward linkage
-- Volatility targeting (15%, 21d), drawdown killswitch (-15%, benchmark recovery)
+- Volatility targeting (implementado, otimizado para 10% na Fase 8), drawdown killswitch (implementado, desabilitado — prejudicial)
 - Grid search: 17+ configs × 8 momentum factories
 - Bug fix: custos de transação desaparecendo do port_ret
 - Bug fix: prob_up discreto → CDF interpolation contínua
@@ -126,7 +127,16 @@ descartando o prob_up do PatchTST. Ver docs/design_gap_backtest_vs_production.md
 - Testes: 761 passando, 5 pré-existentes corrigidos (config desatualizada, rf geométrico)
 - Benchmark com dados limpos: Sharpe=0.611, CAGR=14.62%, MaxDD=-31.69%, Alpha=0.024
 
-**Status atual:** 761 testes passando | Fases 1-7 completas
+### Fase 8 — Fine-Tuning Pós-PatchTST (Sessão 39)
+- Grid search CPCV-OOS 3-tier com 547 configs (T1:249 + T2:149 + T3:149)
+- Restrito a parâmetros "pós-predição" (sem forçar re-treinamento do PatchTST)
+- Findings: target_vol=0.10 (+0.035 Sharpe), rb=15, max_weight=0.06, ward+shrink+pearson
+- top_n e killswitch prejudiciais (removidos); delta, tilt, turnover irrelevantes
+- Config champion aplicada ao run_benchmark.py
+- Recorde walk-forward: Sharpe=0.712, CAGR=13.35%, MaxDD=-18.43%, Beta=0.532
+- Trade-off: CAGR menor (13.35% vs 14.62%) mas risco cortado pela metade (MaxDD -18% vs -32%)
+
+**Status atual:** 1002 testes passando | Fases 1-8 completas
 
 ## O que NUNCA fazer
 - Nunca hardcode API keys (usar .env + python-dotenv)

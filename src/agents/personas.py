@@ -16,6 +16,8 @@ Personas
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -39,7 +41,7 @@ class AgentReportModel(BaseModel):
         ...,
         description="Asset symbol being analysed (e.g. 'SPY').",
     )
-    signal: str = Field(
+    signal: Literal["bullish", "bearish", "neutral"] = Field(
         ...,
         description="Directional view: 'bullish', 'bearish', or 'neutral'.",
     )
@@ -75,7 +77,7 @@ class FinalDecisionModel(BaseModel):
         ...,
         description="Asset symbol.",
     )
-    action: str = Field(
+    action: Literal["BUY", "SELL", "HOLD"] = Field(
         ...,
         description="Investment action: 'BUY', 'SELL', or 'HOLD'.",
     )
@@ -259,6 +261,7 @@ You make the FINAL investment decision after hearing all perspectives.
 ## Mandatory constraints
 
 - If confidence < 0.3, the action MUST be HOLD and weight MUST be 0.0.
+- If the action is SELL, weight MUST be 0.0 (full position exit).
 - Never exceed 0.25 weight for a single position.
 - If the Technical and Fundamental analysts disagree, default to caution
   (reduce confidence by at least 0.1 and reduce weight).

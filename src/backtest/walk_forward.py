@@ -213,6 +213,9 @@ class WalkForwardConfig:
         hrp_config: HRP optimizer configuration.  When ``None``
             (default), a dynamic config is created with
             ``max_weight=min(0.25, 2/n)``.
+        top_n: Number of top-scoring tickers to include at each
+            rebalance.  When ``None`` (default), all available
+            tickers are used.  Must be >= 1 when set.
     """
 
     retrain_every: int = 126
@@ -230,6 +233,7 @@ class WalkForwardConfig:
     margin_spread: float = 0.015
     killswitch: KillswitchConfig | None = None
     hrp_config: HRPConfig | None = None
+    top_n: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +311,8 @@ class WalkForwardBacktester:
                     f"max_leverage ({cfg.max_leverage}) must be >= "
                     f"min_leverage ({cfg.min_leverage})"
                 )
+        if cfg.top_n is not None and cfg.top_n < 1:
+            raise ValueError(f"top_n must be >= 1, got {cfg.top_n}")
         if cfg.killswitch is not None:
             if cfg.killswitch.ramp_up_days < 1:
                 raise ValueError(
@@ -613,13 +619,53 @@ class WalkForwardBacktester:
 
                 confidences = model_factory.predict(predict_data)
 
+                # -- Top-N ticker selection
+                if cfg.top_n is not None:
+                    effective_top_n = min(cfg.top_n, len(confidences))
+                    sorted_tickers = sorted(
+                        confidences.keys(),
+                        key=lambda t: (
+                            confidences[t]
+                            if math.isfinite(confidences[t])
+                            else float("-inf")
+                        ),
+                        reverse=True,
+                    )
+                    selected_tickers = sorted_tickers[:effective_top_n]
+                    confidences = {
+                        t: confidences[t] for t in selected_tickers
+                    }
+                    logger.debug(
+                        "Top-{} selected on {}: {}",
+                        effective_top_n,
+                        current_date,
+                        selected_tickers,
+                    )
+                else:
+                    selected_tickers = list(available_tickers)
+
+                # Adapt HRP max_weight to the selected universe
+                n_sel = len(selected_tickers)
+                if cfg.top_n is not None:
+                    rebalance_hrp_config = HRPConfig(
+                        linkage_method=hrp_config.linkage_method,
+                        correlation_method=hrp_config.correlation_method,
+                        shrinkage=hrp_config.shrinkage,
+                        confidence_tilt_cap=hrp_config.confidence_tilt_cap,
+                        min_weight=hrp_config.min_weight,
+                        max_weight=min(0.25, 2.0 / n_sel),
+                        turnover_threshold=hrp_config.turnover_threshold,
+                    )
+                else:
+                    rebalance_hrp_config = hrp_config
+
                 # HRP — covariance estimated up to decision_date (t-1)
                 log_returns = self._compute_log_returns_for_hrp(
-                    ohlcv, available_tickers, decision_date, cfg.lookback_days
+                    ohlcv, selected_tickers, decision_date, cfg.lookback_days
                 )
 
                 if log_returns.height >= 2:
-                    optimizer = HRPOptimizer(config=hrp_config)
+                    optimizer = HRPOptimizer(config=rebalance_hrp_config)
                     hrp_result = optimizer.optimize(
                         log_returns, confidences=confidences
                     )
@@ -627,8 +673,7 @@ class WalkForwardBacktester:
                 else:
                     # Fallback: equal weight
                     raw_weights = {
-                        t: 1.0 / len(available_tickers)
-                        for t in available_tickers
+                        t: 1.0 / n_sel for t in selected_tickers
                     }
                     logger.warning(
                         "Insufficient data for HRP on {}; using equal weights",
@@ -846,6 +891,7 @@ class WalkForwardBacktester:
 
         metadata: dict[str, Any] = {
             "n_tickers": len(available_tickers),
+            "top_n": cfg.top_n,
             "benchmark_ticker": benchmark_ticker,
             "start_date": str(equity_dates[0]) if equity_dates else None,
             "end_date": str(equity_dates[-1]) if equity_dates else None,

@@ -1444,3 +1444,188 @@ class TestDrawdownKillswitch:
         assert len(post_recovery_rebalances) > 0, (
             "Should have rebalances after recovery (no re-trigger)"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestTopNSelection
+# ---------------------------------------------------------------------------
+
+
+class _FixedConfidenceFactory:
+    """Returns pre-set confidences for testing top-N selection."""
+
+    def __init__(self, scores: dict[str, float]) -> None:
+        self._scores = scores
+
+    def train(self, train_df: pl.DataFrame) -> None:
+        pass
+
+    def predict(self, df: pl.DataFrame) -> dict[str, float]:
+        return dict(self._scores)
+
+
+@pytest.fixture()
+def ohlcv_5t() -> pl.DataFrame:
+    """5 tradeable tickers + SPY benchmark, 600 days."""
+    return _make_ohlcv(
+        ["AAPL", "MSFT", "GOOG", "AMZN", "META", "SPY"], n_days=600
+    )
+
+
+class TestTopNSelection:
+    """Tests for top_n ticker selection at each rebalance."""
+
+    def test_top_n_none_uses_all_tickers(self, ohlcv_3t: pl.DataFrame) -> None:
+        """top_n=None (default) includes all tickers in rebalance."""
+        cfg = WalkForwardConfig(
+            rebalance_every=5,
+            retrain_every=126,
+            lookback_days=100,
+            top_n=None,
+        )
+        bt = WalkForwardBacktester(config=cfg)
+        result = bt.run(
+            ohlcv_3t, ["AAPL", "MSFT", "GOOG"], "SPY", NaiveModelFactory()
+        )
+        # All 3 tickers should appear in weights
+        first_rb = result.rebalance_history[0]
+        non_zero = [t for t, w in first_rb.weights.items() if w > 0]
+        assert len(non_zero) == 3
+
+    def test_top_n_selects_highest_confidence(
+        self, ohlcv_5t: pl.DataFrame
+    ) -> None:
+        """top_n=2 selects only the 2 tickers with highest confidence."""
+        scores = {
+            "AAPL": 0.9,
+            "MSFT": 0.7,
+            "GOOG": 0.3,
+            "AMZN": 0.2,
+            "META": 0.1,
+        }
+        cfg = WalkForwardConfig(
+            rebalance_every=5,
+            retrain_every=9999,
+            lookback_days=100,
+            top_n=2,
+        )
+        bt = WalkForwardBacktester(config=cfg)
+        result = bt.run(
+            ohlcv_5t,
+            ["AAPL", "MSFT", "GOOG", "AMZN", "META"],
+            "SPY",
+            _FixedConfidenceFactory(scores),
+        )
+        first_rb = result.rebalance_history[0]
+        non_zero = {t for t, w in first_rb.weights.items() if w > 1e-8}
+        assert non_zero == {"AAPL", "MSFT"}
+
+    def test_top_n_exceeds_available(self, ohlcv_3t: pl.DataFrame) -> None:
+        """top_n larger than available tickers uses all without error."""
+        cfg = WalkForwardConfig(
+            rebalance_every=5,
+            retrain_every=126,
+            lookback_days=100,
+            top_n=10,
+        )
+        bt = WalkForwardBacktester(config=cfg)
+        result = bt.run(
+            ohlcv_3t, ["AAPL", "MSFT", "GOOG"], "SPY", NaiveModelFactory()
+        )
+        first_rb = result.rebalance_history[0]
+        non_zero = [t for t, w in first_rb.weights.items() if w > 0]
+        assert len(non_zero) == 3
+
+    def test_top_n_one_single_ticker(self, ohlcv_3t: pl.DataFrame) -> None:
+        """top_n=1 concentrates into a single ticker."""
+        cfg = WalkForwardConfig(
+            rebalance_every=5,
+            retrain_every=9999,
+            lookback_days=100,
+            top_n=1,
+        )
+        scores = {"AAPL": 0.9, "MSFT": 0.5, "GOOG": 0.3}
+        bt = WalkForwardBacktester(config=cfg)
+        result = bt.run(
+            ohlcv_3t,
+            ["AAPL", "MSFT", "GOOG"],
+            "SPY",
+            _FixedConfidenceFactory(scores),
+        )
+        first_rb = result.rebalance_history[0]
+        non_zero = {t for t, w in first_rb.weights.items() if w > 1e-8}
+        assert non_zero == {"AAPL"}
+
+    def test_top_n_zero_raises(self) -> None:
+        """top_n=0 raises ValueError."""
+        cfg = WalkForwardConfig(top_n=0)
+        with pytest.raises(ValueError, match="top_n must be >= 1"):
+            WalkForwardBacktester(config=cfg)
+
+    def test_top_n_negative_raises(self) -> None:
+        """top_n=-1 raises ValueError."""
+        cfg = WalkForwardConfig(top_n=-1)
+        with pytest.raises(ValueError, match="top_n must be >= 1"):
+            WalkForwardBacktester(config=cfg)
+
+    def test_top_n_in_metadata(self, ohlcv_3t: pl.DataFrame) -> None:
+        """Metadata records the top_n setting."""
+        cfg = WalkForwardConfig(
+            rebalance_every=5,
+            retrain_every=126,
+            lookback_days=100,
+            top_n=2,
+        )
+        bt = WalkForwardBacktester(config=cfg)
+        result = bt.run(
+            ohlcv_3t, ["AAPL", "MSFT", "GOOG"], "SPY", NaiveModelFactory()
+        )
+        assert result.metadata["top_n"] == 2
+
+    def test_top_n_metadata_none_default(
+        self, ohlcv_3t: pl.DataFrame
+    ) -> None:
+        """Metadata records top_n=None when not set."""
+        cfg = WalkForwardConfig(
+            rebalance_every=5,
+            retrain_every=126,
+            lookback_days=100,
+        )
+        bt = WalkForwardBacktester(config=cfg)
+        result = bt.run(
+            ohlcv_3t, ["AAPL", "MSFT", "GOOG"], "SPY", NaiveModelFactory()
+        )
+        assert result.metadata["top_n"] is None
+
+    def test_unselected_tickers_get_zero_weight(
+        self, ohlcv_5t: pl.DataFrame
+    ) -> None:
+        """Tickers not in top-N have 0 weight in rebalance."""
+        scores = {
+            "AAPL": 0.9,
+            "MSFT": 0.8,
+            "GOOG": 0.3,
+            "AMZN": 0.2,
+            "META": 0.1,
+        }
+        cfg = WalkForwardConfig(
+            rebalance_every=5,
+            retrain_every=9999,
+            lookback_days=100,
+            top_n=3,
+        )
+        bt = WalkForwardBacktester(config=cfg)
+        result = bt.run(
+            ohlcv_5t,
+            ["AAPL", "MSFT", "GOOG", "AMZN", "META"],
+            "SPY",
+            _FixedConfidenceFactory(scores),
+        )
+        first_rb = result.rebalance_history[0]
+        assert first_rb.weights.get("AMZN", 0.0) < 1e-8
+        assert first_rb.weights.get("META", 0.0) < 1e-8
+
+    def test_config_default_top_n_none(self) -> None:
+        """WalkForwardConfig defaults top_n to None."""
+        cfg = WalkForwardConfig()
+        assert cfg.top_n is None

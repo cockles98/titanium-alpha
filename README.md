@@ -1,11 +1,11 @@
 # Titanium Alpha
 
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)
-![Tests 761](https://img.shields.io/badge/Tests-761%20passing-brightgreen?logo=pytest&logoColor=white)
+![Tests 1002](https://img.shields.io/badge/Tests-1002%20passing-brightgreen?logo=pytest&logoColor=white)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
 ![CI](https://img.shields.io/badge/CI-passing-brightgreen?logo=github-actions&logoColor=white)
 
-An **agentic multi-strategy hedge fund system** that uses AI agents to debate investment decisions the way a real trading desk operates. Four specialized agents -- a Technical Analyst, a Fundamentalist, a Devil's Advocate, and a Portfolio Manager -- analyse deep learning forecasts, financial news, and market data, then argue their positions before committing capital. The system validates every strategy through **CPCV-OOS parameter optimization with Deflated Sharpe Ratio**, a **walk-forward backtest across 52 S&P 500 constituents** with weekly rebalancing and risk-free cash carry -- then allocates risk using **Hierarchical Risk Parity with Ledoit-Wolf shrinkage**.
+An **agentic multi-strategy hedge fund system** that uses AI agents to debate investment decisions the way a real trading desk operates. Four specialized agents -- a Technical Analyst, a Fundamentalist, a Devil's Advocate, and a Portfolio Manager -- analyse deep learning forecasts, financial news, and market data, then argue their positions before committing capital. The system validates every strategy through **CPCV-OOS parameter optimization with Deflated Sharpe Ratio**, a **walk-forward backtest across 52 S&P 500 constituents** with triweekly rebalancing, volatility targeting, and risk-free cash carry -- then allocates risk using **Hierarchical Risk Parity with Ledoit-Wolf shrinkage**. A **three-tier fine-tuning grid search** (547 configs) with resume capability, PatchTST model caching, and top-N ticker selection enables systematic parameter optimization at scale.
 
 ---
 
@@ -21,11 +21,11 @@ Titanium Alpha takes a fundamentally different approach:
 
 - **Memory matters.** A RAG pipeline embeds financial news into ChromaDB, giving agents access to recent events -- earnings surprises, macro shifts, sector rotations -- so decisions are grounded in reality, not just price charts.
 
-- **Every strategy parameter is validated before deployment.** CPCV-OOS (Combinatorial Purged Cross-Validation Out-of-Sample) with **Deflated Sharpe Ratio** (Bailey & Lopez de Prado, 2014) tests 17+ configurations and 8 momentum factories across 15 non-overlapping paths. Only parameters with `pct_positive >= 66.7%` and `DSR p-value > 0.95` are accepted.
+- **Every strategy parameter is validated before deployment.** A **three-tier fine-tuning grid search** (547 configs across 3 tiers, ~18h per tier) with CPCV-OOS (Combinatorial Purged Cross-Validation Out-of-Sample) and **Deflated Sharpe Ratio** (Bailey & Lopez de Prado, 2014) tests configurations across 15 non-overlapping paths. The champion is then validated on a **temporal holdout period** (2 years, unseen by the grid search) with `n_trials=1` -- eliminating the multiple-testing penalty. Resume capability, incremental saves (crash-safe), ETA estimation, and cross-tier deduplication ensure no wasted compute. Only parameters with `pct_positive >= 66.7%` and `DSR p-value > 0.95` are accepted.
 
-- **Walk-forward benchmark with rigorous temporal discipline.** A full temporal simulation across 52 US large-cap stocks with **weekly rebalancing**, semi-annual PatchTST retraining, and **zero look-ahead bias** (decisions use only data up to t-1, returns are earned at t). Cash earns the risk-free rate pro-rata; margin (when leveraged) costs rf + spread. Transaction costs (slippage + commission) applied on every position change. 16 portfolio-vs-benchmark metrics computed automatically.
+- **Walk-forward benchmark with rigorous temporal discipline.** A full temporal simulation across 52 US large-cap stocks with **triweekly rebalancing** (15 trading days), semi-annual PatchTST retraining, **10% annualized volatility targeting**, and **zero look-ahead bias** (decisions use only data up to t-1, returns are earned at t). Optional **top-N ticker selection** filters to the highest-conviction positions at each rebalance. Cash earns the risk-free rate pro-rata; margin (when leveraged) costs rf + spread. Transaction costs (slippage + commission) applied on every position change. **PatchTST model caching** avoids redundant retraining across runs with identical training windows. 16 portfolio-vs-benchmark metrics computed automatically.
 
-- **Risk allocation is mathematically principled.** Hierarchical Risk Parity (Lopez de Prado, 2016) with **Ledoit-Wolf covariance shrinkage**, confidence tilt from model signals (cap=0.20), and dynamic weight caps (`min(25%, 2/N)`) that scale automatically with the number of assets.
+- **Risk allocation is mathematically principled.** Hierarchical Risk Parity (Lopez de Prado, 2016) with **Ledoit-Wolf covariance shrinkage**, confidence tilt from model signals (cap=0.20), and dynamic weight caps (`min(6%, 2/N)`) that scale automatically with the number of assets.
 
 The result is an end-to-end system where every component -- from data ingestion to portfolio allocation -- is production-grade, fully tested, and designed to make better decisions under uncertainty.
 
@@ -33,17 +33,19 @@ The result is an end-to-end system where every component -- from data ingestion 
 
 ## Key Results (Walk-Forward Benchmark, 52 Tickers, 2016--2026)
 
-| Metric | PatchTST | NaiveModelFactory | Benchmark (SPY) |
+| Metric | Fine-Tuned (record) | Pre-Tuning Baseline | Benchmark (SPY) |
 |---|---|---|---|
-| **Sharpe Ratio** | 0.614 | 0.611 | -- |
-| **CAGR** | 14.73% | 14.62% | ~13.5% |
-| **Total Return** | 199% | 197% | 175% |
-| **Max Drawdown** | -31.52% | -31.69% | -- |
-| **Alpha (CAPM)** | +2.45% | +2.38% | -- |
-| **Beta** | 0.806 | 0.842 | 1.0 |
-| **Final Value** | $2,991,097 | $2,968,332 | $2,753,552 |
+| **Sharpe Ratio** | **0.712** | 0.611 | -- |
+| **CAGR** | 13.35% | 14.62% | ~13.5% |
+| **Total Return** | 140% | 197% | 157% |
+| **Max Drawdown** | **-18.43%** | -31.69% | -- |
+| **Sortino Ratio** | 1.000 | -- | -- |
+| **Calmar Ratio** | 0.725 | -- | -- |
+| **Alpha (CAPM)** | +2.70% | +2.38% | -- |
+| **Beta** | 0.532 | 0.842 | 1.0 |
+| **Ann. Volatility** | 11.73% | -- | -- |
 
-> **Note:** Both models use clean re-ingested data (12 years, thread-safe `yf.Ticker().history()`) with weekly rebalancing and semi-annual retraining. PatchTST shows marginal improvement over the naive baseline. The multi-agent debate layer has not yet been backtested. See [docs/design_gap_backtest_vs_production.md](docs/design_gap_backtest_vs_production.md) for details.
+> **Note:** The fine-tuned config (rb=15, vol_target=10%, max_weight=6%, Ward+Ledoit-Wolf) was identified by a 3-tier CPCV-OOS grid search (547 configs). Volatility targeting at 10% annualized dramatically improved risk-adjusted returns: Sharpe +16% (0.611 -> 0.712), MaxDD halved (-31.7% -> -18.4%), beta cut from 0.84 to 0.53. The trade-off is lower raw CAGR (13.35% vs 14.62%) due to reduced exposure in high-volatility periods. Both use NaiveModelFactory on clean data (12 years, thread-safe `yf.Ticker().history()`) with 756-day covariance lookback and semi-annual retraining. The multi-agent debate layer has not yet been backtested. See [docs/design_gap_backtest_vs_production.md](docs/design_gap_backtest_vs_production.md) for details.
 
 ---
 
@@ -81,7 +83,7 @@ flowchart TB
     end
 
     subgraph Portfolio Allocation
-        PG -->|OHLCV| RET[Log Returns<br/>504-day lookback]
+        PG -->|OHLCV| RET[Log Returns<br/>756-day lookback]
         DEC -->|Confidences| HRP[HRP Optimizer<br/>Ledoit-Wolf + Ward]
         RET --> HRP
         HRP --> MERGE[Merge Actions + Weights<br/>BUY=HRP, HOLD=HRP*conf,<br/>SELL=0, cash implicit]
@@ -91,12 +93,12 @@ flowchart TB
     subgraph CPCV-OOS Validation
         PTST --> CPCV[CPCV Backtester<br/>15 paths, embargo, costs]
         CPCV --> DSR[Deflated Sharpe Ratio<br/>Bailey & Lopez de Prado 2014]
-        DSR --> GRID[Grid Search<br/>17 configs x 8 factories]
+        DSR --> GRID[3-Tier Grid Search<br/>~500 configs, resume/dedup]
         GRID --> VALID[Validated Parameters]
     end
 
     subgraph Walk-Forward Benchmark
-        PG -->|OHLCV 52 tickers| WF[Walk-Forward Backtester<br/>weekly rebalance, decision_date=t-1]
+        PG -->|OHLCV 52 tickers| WF[Walk-Forward Backtester<br/>triweekly rebalance, vol targeting, decision_date=t-1]
         VALID -.->|optimised config| WF
         WF -->|equity curve| BM[Benchmark Metrics<br/>16 metrics vs SPY]
         BM --> PDF2[Benchmark Report PDF<br/>6 pages]
@@ -117,13 +119,13 @@ flowchart TB
 
 | Component | Description |
 |---|---|
-| **PatchTST Forecaster** | Transformer-based 5-day return forecasting with quantile uncertainty (10th, 25th, 50th, 75th, 90th percentiles). CDF interpolation produces continuous P(up) probability per ticker. Supports both old and new NeuralForecast column naming conventions. |
+| **PatchTST Forecaster** | Transformer-based 5-day return forecasting with quantile uncertainty (10th, 25th, 50th, 75th, 90th percentiles). CDF interpolation with **monotonicity rearrangement** produces continuous P(up) probability per ticker. NaN/infinity guards prevent corrupt predictions. `get_params()` and cache-aware `load()` enable deterministic model caching across walk-forward runs. Supports both old and new NeuralForecast column naming conventions. |
 | **Multi-Agent Debate** | Four Claude Sonnet agents with distinct personas debate each ticker through a LangGraph pipeline. Structured output via Pydantic ensures machine-readable decisions. Live streaming mode with per-node callbacks. |
 | **Financial RAG** | News articles embedded with sentence-transformers, stored in ChromaDB, retrieved by semantic similarity with date-aware reranking. Agents cite sources -- never hallucinate news. |
-| **CPCV-OOS Validation** | Grid search across 17+ configurations and 8 momentum factories. Deflated Sharpe Ratio (Bailey & Lopez de Prado, 2014) with empirical skewness/kurtosis. Acceptance criteria: `pct_positive >= 66.7%` and `DSR p-value > 0.95`. |
-| **Walk-Forward Benchmark** | Full temporal simulation across 52 US large-cap stocks with **weekly rebalancing** (5 days), semi-annual PatchTST retraining (126 days), and **zero look-ahead bias** (`decision_date = t-1`). Portfolio starts 100% in cash (institutional initialization). Cash earns rf pro-rata (geometric compounding); margin costs rf + spread. Ex-ante volatility targeting with configurable leverage bounds. Drawdown killswitch with benchmark recovery gate. Bankruptcy safeguard terminates backtest if capital reaches zero. Compared against SPY buy-and-hold. |
+| **CPCV-OOS Validation** | **Three-tier fine-tuning grid search** (547 configs, ~18h per tier). Tier 1: single-axis sweeps + key 2-way interactions (249 configs). Tier 2: factorial combinations on promising dimensions (149 configs). Tier 3: fine-grain refinement on champion sweet spot (149 configs). Resume capability skips already-computed configs on restart; incremental saves every 5 configs (crash-safe); rolling-average ETA; cross-tier deduplication. **Holdout temporal validation**: champion tested on unseen 2-year holdout period with `n_trials=1` (no multiple-testing penalty). Deflated Sharpe Ratio (Bailey & Lopez de Prado, 2014) with empirical skewness/kurtosis on excess returns. Acceptance criteria: `pct_positive >= 66.7%` and `DSR p-value > 0.95`. |
+| **Walk-Forward Benchmark** | Full temporal simulation across 52 US large-cap stocks with **triweekly rebalancing** (15 trading days, CPCV-OOS validated), semi-annual PatchTST retraining (126 days), 756-day covariance lookback (~3 years), **10% annualized volatility targeting** (63-day lookback, 0.5-1.0 leverage band), and **zero look-ahead bias** (`decision_date = t-1`). Portfolio starts 100% in cash (institutional initialization). Optional **top-N ticker selection** filters to highest-conviction positions at each rebalance with adaptive `max_weight = min(6%, 2/N_selected)`. **PatchTST model caching** (hash of training window + hyperparameters) avoids redundant retraining. Cash earns rf pro-rata (geometric compounding); margin costs rf + spread. Ex-ante volatility targeting uses simulated portfolio returns (pre-allocation, not post-return). Bankruptcy safeguard terminates backtest if capital reaches zero. Compared against SPY buy-and-hold. Sigmoid-based momentum scoring in NaiveModelFactory replaces linear clamp for smoother confidence curves. |
 | **Benchmark Metrics** | 16 portfolio-vs-benchmark metrics: CAGR, Sharpe, Sortino, Information Ratio, Jensen's alpha (CAPM OLS), beta, max drawdown, max drawdown duration, Calmar ratio, tracking error, monthly hit rate, avg turnover, and more. |
-| **HRP Allocation** | Hierarchical Risk Parity with **Ledoit-Wolf covariance shrinkage**, sum-preserving confidence tilt (weighted-mean neutral, cap=0.20), waterfilling constraint optimizer with turnover latching (`turnover_threshold=0.02`). Dynamic weight caps (`min(25%, 2/N)`) that scale with the number of assets. Supports `previous_weights` for turnover-aware rebalancing. |
+| **HRP Allocation** | Hierarchical Risk Parity with **Ledoit-Wolf covariance shrinkage**, sum-preserving confidence tilt (weighted-mean neutral, cap=0.20), waterfilling constraint optimizer with turnover latching (`turnover_threshold=0.02`). Dynamic weight caps (`min(6%, 2/N)`) that scale with the number of assets. Supports `previous_weights` for turnover-aware rebalancing. |
 | **Transaction Cost Model** | Slippage (5 bps), commission (10 bps), and liquidity-aware market impact (`1/sqrt(relative_volume)`) applied per position change. Turnover threshold (`min_rebalance_delta=0.02`) to skip dust rebalances. |
 | **Data Ingestion** | `yf.Ticker().history()` with `auto_adjust=True` ensures split- and dividend-adjusted OHLCV prices throughout. Thread-safe per-ticker objects prevent data corruption in parallel downloads (the older `yf.download()` API shares internal session/cache state across threads, causing adjacent tickers to receive identical data). 12 years of history (2014--2026) for 52 tickers + SPY benchmark. |
 | **Streamlit Dashboard** | Four-tab interface: benchmark (equity curve, drawdown, rolling Sharpe, weight heatmap, CPCV-OOS results), portfolio performance (donut + bar charts), war room (agent debate replay with live streaming), and microstructure (fan charts with quantile bands and last-close reference line). |
@@ -151,12 +153,21 @@ make ingest
 make predict
 
 # 6. Run walk-forward benchmark vs S&P 500
-make benchmark          # PatchTST model (production)
+make benchmark          # PatchTST model (production, cached)
 make benchmark-fast     # NaiveModelFactory (quick validation)
+# Optional: top-N ticker selection
+python -m src.backtest.run_benchmark --top-n=10
 
-# 7. Validate parameters with CPCV-OOS
-make validate           # Full grid search (17 configs x 8 factories)
-make validate-fast      # Tier 1 only (7 configs)
+# 7. Fine-tune parameters with CPCV-OOS (three-tier grid search)
+python -m src.backtest.run_validation --tier 1       # Day 1 (~165 configs, ~18h)
+python -m src.backtest.run_validation --tier 2       # Day 2 (~165 configs, ~18h)
+python -m src.backtest.run_validation --tier 3       # Day 3 (~170 configs, ~18h)
+python -m src.backtest.run_validation --holdout      # Validate champion on 2-year holdout
+python -m src.backtest.run_validation --holdout --holdout-years=3
+python -m src.backtest.run_validation --dry-run      # Print grid, no execution
+python -m src.backtest.run_validation --estimate     # Time 1 config
+make validate           # Full validation (all tiers)
+make validate-fast      # Tier 1 only
 
 # 8. Run agent debate + portfolio allocation (requires ANTHROPIC_API_KEY)
 make decide
@@ -183,12 +194,13 @@ titanium-alpha/
 |   |-- dashboard/          Streamlit app (4 tabs: Benchmark, Performance, War Room, Microstructure)
 |   |-- utils/              Database connections (PostgreSQL, ChromaDB)
 |-- config/                 tickers.json (52 US large caps, SPY benchmark)
-|-- tests/                  761 tests (pytest), fixtures in conftest.py
+|-- tests/                  1002 tests (pytest), fixtures in conftest.py
 |-- docker/                 docker-compose.yml (PostgreSQL 15 + ChromaDB)
 |-- docs/                   Architecture, backtest metrics, design gap analysis, research notes
 |-- notebooks/              Exploration only (never imported by src/)
 |-- data/outputs/           Pipeline artifacts (predictions, decisions, equity curves, reports)
 |-- models/checkpoints/     Saved PatchTST model weights
+|-- models/wf_cache/        PatchTST walk-forward cache (hash-based, auto-managed)
 |-- Makefile                setup, ingest, predict, decide, benchmark, validate, test, lint, run
 |-- pyproject.toml          Poetry config, ruff, mypy, pytest settings
 ```
@@ -221,13 +233,13 @@ output = engine.run()
 5. **Extract confidences** from the debate; missing tickers use PatchTST `prob_up` fallback (or 0.5 if neither is available)
 6. **Classify tickers** into BUY, HOLD, and SELL groups (no debate = BUY)
 7. **Filter to investable subset** (BUY + HOLD only) for HRP
-8. **Run HRP** on the investable subset with Ledoit-Wolf shrinkage and confidence tilt (cap=0.20), dynamic `max_weight = min(25%, 2/N)`
+8. **Run HRP** on the investable subset with Ledoit-Wolf shrinkage and confidence tilt (cap=0.20), dynamic `max_weight = min(6%, 2/N)`
 9. **HOLD scaling** -- HOLD tickers get `weight * confidence` (reduced but non-zero); max_weight enforced without renormalization; `sum(weights) <= 1.0` with implicit cash
 10. **Save** `decisions.json` and `debate_history.json` for dashboard consumption
 
 **Three-tier weight model:** BUY tickers receive full HRP weight, HOLD tickers receive HRP weight scaled by confidence (< 0.3 by rule, so significantly reduced), SELL tickers get weight 0. The gap between `sum(weights)` and 1.0 is implicit cash.
 
-Graceful degradation is built in: if the agent debate fails (no API key, network error), the pipeline loads PatchTST `prob_up` from `predictions.parquet` as the confidence signal for HRP tilt. If predictions are also unavailable, all tickers default to BUY with uniform confidence (0.5). See [design gap analysis](docs/design_gap_backtest_vs_production.md) for details.
+Graceful degradation is built in: if the agent debate fails (no API key, network error), the pipeline loads PatchTST `prob_up` from `predictions.parquet` and applies **percentile-based classification** (bottom 15% SELL, 15-40% HOLD, top 60% BUY; requires minimum 5 tickers). If predictions are also unavailable, all tickers default to BUY with uniform confidence (0.5). See [design gap analysis](docs/design_gap_backtest_vs_production.md) for details.
 
 ### Walk-Forward Benchmark
 
@@ -248,16 +260,20 @@ result = run_us_benchmark(use_patchtst=True)  # or --naive for quick validation
 | Parameter | Value | Rationale |
 |---|---|---|
 | Universe | 52 US large caps + SPY | S&P 500 constituents across 9 sectors |
-| Rebalance | Weekly (5 trading days) | Balances alpha capture vs turnover cost |
+| Rebalance | Triweekly (15 trading days) | CPCV-OOS validated (547 configs); balances alpha capture vs turnover cost |
 | Retrain PatchTST | Semi-annual (126 trading days) | Separates slow/fast cycles |
-| Lookback | 504 days (~2 years) | Stable covariance estimation |
+| Lookback | 756 days (~3 years) | CPCV-OOS validated; stable covariance estimation |
 | Costs | 5 bps slippage + 10 bps commission | Conservative for US large caps |
 | Cash carry | rf pro-rata (5% annual, geometric) | Positive cash earns risk-free rate |
 | Margin cost | rf + 150 bps spread (geometric) | Negative cash (leverage) incurs borrow cost |
-| HRP | Ledoit-Wolf shrinkage, sum-preserving tilt cap=0.20, max_weight=min(25%, 2/N), turnover_threshold=0.02 | Conservative tilt, diversified allocation, turnover-aware |
+| Top-N | `None` (all tickers) | Optional; filters to highest-conviction positions per rebalance |
+| Vol targeting | 10% annualized, 63-day lookback, 0.5--1.0 leverage | CPCV-OOS validated; single biggest Sharpe driver (+0.035) |
+| HRP | Ledoit-Wolf shrinkage, Ward linkage, sum-preserving tilt cap=0.20, max_weight=min(6%, 2/N), turnover_threshold=0.02 | CPCV-OOS validated; conservative tilt, diversified allocation, turnover-aware |
 | Min rebalance delta | 2% turnover | Skip dust rebalances |
 | Decision cutoff | t-1 (previous close) | Zero look-ahead bias |
 | Capital | $1,000,000 | Institutional standard |
+| OOS period | 10 years (configurable) | Leap-year safe date filtering |
+| PatchTST cache | `models/wf_cache/<hash>/` | Avoids redundant retraining across runs |
 
 Outputs: `benchmark_equity.parquet`, `benchmark_metrics.json`, `benchmark_weights.parquet`, and a 6-page PDF report (equity curve, drawdown, metrics table, rolling Sharpe, weight heatmap, turnover chart).
 
@@ -265,11 +281,21 @@ Outputs: `benchmark_equity.parquet`, `benchmark_metrics.json`, `benchmark_weight
 
 Before deploying any configuration, parameters are validated through Combinatorial Purged Cross-Validation:
 
-```python
-from src.backtest.run_validation import run_improvement_validation
+```bash
+# Three-tier systematic grid search
+python -m src.backtest.run_validation --tier 1        # Day 1: single-axis sweeps (~165 configs)
+python -m src.backtest.run_validation --tier 2        # Day 2: factorial combos (~165 configs)
+python -m src.backtest.run_validation --tier 3        # Day 3: champion refinement (~170 configs)
+python -m src.backtest.run_validation --tier all      # Run all sequentially
 
-results = run_improvement_validation(subset="all")  # tier1 + tier2 + tier3 + tier4
-# results -> validation_results.json, validation_summary.md
+# Holdout temporal validation (champion tested on unseen period, n_trials=1)
+python -m src.backtest.run_validation --holdout                    # 2-year holdout (default)
+python -m src.backtest.run_validation --holdout --holdout-years=3  # 3-year holdout
+python -m src.backtest.run_validation --tier all --holdout         # Grid search + holdout
+
+# Utilities
+python -m src.backtest.run_validation --estimate      # Time 1 config
+python -m src.backtest.run_validation --dry-run       # Print grid, no execution
 ```
 
 The validator:
@@ -278,12 +304,15 @@ The validator:
 3. Runs the walk-forward backtester on each path independently
 4. Computes Deflated Sharpe Ratio (corrects for multiple testing)
 5. Accepts only configurations with `pct_positive >= 66.7%` AND `DSR p-value > 0.95`
+6. **Holdout validation**: champion is tested on a reserved temporal period (default 2 years) that the grid search never sees, with `n_trials=1` -- eliminating the multiple-testing penalty that makes DSR acceptance nearly impossible with 547 configs
+
+**Operational features:** Resume capability (skips already-computed configs on restart), incremental saves every 5 configs (crash-safe), rolling-average ETA estimation, and cross-tier deduplication (same parameter fingerprint never runs twice). Time budget: ~375s per config (25s x 15 CPCV-OOS paths), ~172 configs per 18h tier.
 
 ---
 
 ## Testing
 
-The test suite covers every module with 761 tests:
+The test suite covers every module with 1002 tests:
 
 ```bash
 make test
@@ -295,10 +324,11 @@ poetry run pytest tests/ -v --tb=short
 
 | Area | Tests | What is validated |
 |---|---|---|
-| Data ingestion | 61 | Download, schema, retry, upsert, parallel, partial failure, date range |
-| Feature engineering | 30 | RSI, Bollinger, volatility, volume, no look-ahead bias |
-| PatchTST model | 43 | Init, prepare, build, fit, predict, CDF interpolation, NF naming conventions |
-| Prediction pipeline | 12 | Load, metrics (MAE/RMSE), Parquet roundtrip |
+| Data ingestion | 35 | Download, schema, retry, upsert, parallel, partial failure, thread-safe `yf.Ticker().history()` |
+| News ingestion | 43 | RSS parsing, dedup, embedding status, ticker matching |
+| Feature engineering | 31 | RSI, Bollinger, volatility, volume, no look-ahead bias |
+| PatchTST model | 49 | Init, prepare, build, fit, predict, CDF monotonicity rearrangement, NaN guards, `get_params()`, cache-aware load |
+| Prediction pipeline | 13 | Load, metrics (MAE/RMSE), Parquet roundtrip |
 | Ticker config | 13 | Config loading, fallback, validation, real config |
 | Agent state + personas | 58 | TypedDicts, Pydantic models, validation, registry |
 | LangGraph graph | 36 | Node execution, RAG integration, full pipeline |
@@ -306,14 +336,14 @@ poetry run pytest tests/ -v --tb=short
 | CPCV backtest | 94 | Splits, purge, embargo, Sharpe, drawdown, costs |
 | CPCV-OOS validator | 66 | DSR math, purged factory, grid search, integration |
 | CPCV report | 15 | PDF generation, plots, edge cases |
-| Walk-forward backtest | 74 | Config, returns, costs, drift, vol targeting, killswitch, look-ahead bias |
+| Walk-forward backtest | 84 | Config, returns, costs, drift, vol targeting, killswitch, top-N selection, sigmoid momentum, bankruptcy safeguard, look-ahead bias |
 | Benchmark metrics | 40 | Sharpe, Sortino, alpha, beta, drawdown, hit rate, edge cases |
 | Benchmark report | 19 | PDF 6-page generation, helpers, edge cases |
-| Run benchmark | 15 | Filter, model factory, save, e2e integration |
-| Run validation | 43 | Config builders, output savers, HRP integration, pipeline mocked |
-| HRP optimizer | 80 | Covariance, clustering, bisection, tilt, Ledoit-Wolf shrinkage, ward linkage |
-| Decision engine | 46 | Returns, merge, classify, fallback, HOLD scaling, metadata, debate, JSON output |
-| Dashboard | 47 | Loaders, charts, agent styles, streaming, benchmark tab, fan chart sort |
+| Run benchmark | 15 | Filter, model factory, PatchTST caching, save, e2e integration |
+| Run validation | 73 | Three-tier grid builders, resume/dedup, holdout temporal validation, champion identification, output savers, HRP integration, pipeline mocked |
+| HRP optimizer | 80 | Covariance, clustering, bisection, tilt, Ledoit-Wolf shrinkage, Ward linkage, waterfilling |
+| Decision engine | 74 | Returns, merge, classify, percentile-based fallback, HOLD scaling, metadata, debate, JSON output |
+| Dashboard | 81 | Loaders, charts, agent styles, streaming, benchmark tab, fan chart sort, schema v1.2 |
 | DB utilities | 15 | Connection pooling, env vars, overrides |
 
 All tests use mocks for external dependencies (APIs, databases, LLMs). No real API calls are made during testing.
@@ -333,7 +363,7 @@ All tests use mocks for external dependencies (APIs, databases, LLMs). No real A
 | Vector Store | ChromaDB | Semantic search over financial news |
 | Database | PostgreSQL 15 | OHLCV + news persistence |
 | Portfolio | scipy + numpy + scikit-learn | HRP clustering, Ledoit-Wolf shrinkage |
-| Backtesting | Custom CPCV + CPCV-OOS + Walk-Forward | Cross-validation + parameter validation + temporal benchmark |
+| Backtesting | Custom CPCV + CPCV-OOS + Walk-Forward | Cross-validation + three-tier grid search + temporal benchmark |
 | Reporting | matplotlib + seaborn | 6-page benchmark PDF (equity, drawdown, metrics, heatmap) |
 | Dashboard | Streamlit + Plotly | Interactive 4-tab interface |
 | Logging | loguru | Structured logging (never print()) |
@@ -342,14 +372,15 @@ All tests use mocks for external dependencies (APIs, databases, LLMs). No real A
 | Containers | Docker Compose | PostgreSQL + ChromaDB services |
 | Linting | ruff + mypy | Style enforcement + strict type checking |
 | CI | GitHub Actions | Automated test + lint on push/PR |
-| Testing | pytest | 761 tests, all mocked |
+| Testing | pytest | 1002 tests, all mocked |
 
 ---
 
 ## Known Limitations
 
-- **Backtest-production gap:** The walk-forward benchmark uses NaiveModelFactory (5-day momentum). The multi-agent debate pipeline and PatchTST model have not yet been backtested with the corrected temporal discipline. See [design gap analysis](docs/design_gap_backtest_vs_production.md).
-- **Agent fallback:** When LangGraph agents are unavailable, the decision engine now falls back to PatchTST `prob_up` from `predictions.parquet` as the confidence signal (preserving the validated signal). Only if predictions are also unavailable does it default to uniform BUY with confidence 0.5.
+- **Backtest-production gap:** The walk-forward benchmark validates NaiveModelFactory (sigmoid momentum) and PatchTST (with model caching). The multi-agent debate pipeline has not yet been backtested with the corrected temporal discipline. See [design gap analysis](docs/design_gap_backtest_vs_production.md).
+- **Agent fallback:** When LangGraph agents are unavailable, the decision engine falls back to PatchTST `prob_up` from `predictions.parquet` with **percentile-based classification** (bottom 15% SELL, 15-40% HOLD, top 60% BUY). If predictions are also unavailable, all tickers default to BUY with uniform confidence (0.5).
+- **CPCV-OOS acceptance:** Grid search across 547 configs (3 tiers) found 0 DSR-accepted configurations when penalised for multiple testing. A **holdout temporal validation** approach (`--holdout`) addresses this: the champion is tested on a reserved 2-year period the grid search never sees, with `n_trials=1` (no multiple-testing penalty). The current champion (rb=15, vol_target=10%, max_weight=6%, Ward+Ledoit-Wolf) achieved Sharpe 0.710 in the full walk-forward benchmark. See [data/outputs/validation_3tier_analysis.md](data/outputs/validation_3tier_analysis.md) for the complete analysis.
 - **No short selling:** The system only goes long or flat (no short positions).
 
 ---

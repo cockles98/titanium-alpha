@@ -1,15 +1,28 @@
 """Tests for src/agents/graph.py — LangGraph investment pipeline.
 
-All LLM calls are mocked via ChatAnthropic patches.  No real API calls.
+All LLM calls are mocked via _create_llm patches.  No real API calls.
 """
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
+
+# Ensure src.agents.rag is resolvable by mock.patch() even when heavy
+# dependencies (sentence_transformers) are not installed.
+if "src.agents.rag" not in sys.modules:
+    try:
+        import src.agents.rag  # noqa: F401
+    except (ImportError, ModuleNotFoundError):
+        import src.agents as _agents_pkg
+
+        _rag_stub = MagicMock()
+        sys.modules["src.agents.rag"] = _rag_stub
+        _agents_pkg.rag = _rag_stub  # type: ignore[attr-defined]
 
 from src.agents.graph import (
     _format_debate_entry,
@@ -132,7 +145,7 @@ def mock_decision() -> FinalDecisionModel:
 
 
 def _make_mock_structured_llm(return_value: AgentReportModel | FinalDecisionModel) -> MagicMock:
-    """Create a mock ChatAnthropic that returns a structured output."""
+    """Create a mock LLM that returns a structured output."""
     mock_llm_instance = MagicMock()
     mock_structured = MagicMock()
     mock_structured.invoke.return_value = return_value
@@ -241,12 +254,14 @@ class TestLoadContext:
         })
         pred_df.write_parquet(tmp_path / "predictions.parquet")
 
+        # Multi-row forecast: h=3 horizons. load_context must take the
+        # LAST row (farthest horizon) to match prob_up computation.
         fc_df = pl.DataFrame({
-            "unique_id": ["SPY"],
-            "ds": [0],
-            "PatchTST-q0.1": [445.0],
-            "PatchTST-q0.5": [450.0],
-            "PatchTST-q0.9": [455.0],
+            "unique_id": ["SPY", "SPY", "SPY"],
+            "ds": [1, 2, 3],
+            "PatchTST-q0.1": [445.0, 444.0, 443.0],
+            "PatchTST-q0.5": [450.0, 451.0, 452.0],
+            "PatchTST-q0.9": [455.0, 457.0, 460.0],
         })
         fc_df.write_parquet(tmp_path / "forecast.parquet")
 
@@ -257,6 +272,30 @@ class TestLoadContext:
 
         assert result["predictions"]["prob_up"] == 0.8
         assert "q0.5" in result["predictions"]["quantiles"]
+        # Must be from the last row (ds=3), not the first (ds=1)
+        assert result["predictions"]["quantiles"]["q0.1"] == 443.0
+        assert result["predictions"]["quantiles"]["q0.5"] == 452.0
+        assert result["predictions"]["quantiles"]["q0.9"] == 460.0
+
+    def test_loads_features_from_parquet(self, tmp_path: Path) -> None:
+        feat_df = pl.DataFrame({
+            "ticker": ["SPY"],
+            "rsi_14": [65.0],
+            "bb_upper": [460.0],
+            "bb_middle": [450.0],
+            "bb_lower": [440.0],
+            "realized_vol_21": [0.18],
+        })
+        feat_df.write_parquet(tmp_path / "features.parquet")
+
+        state = make_empty_state("SPY")
+
+        with patch("src.agents.graph._PREDICTIONS_DIR", tmp_path):
+            result = load_context(state)
+
+        assert result["technical_features"]["rsi_14"] == 65.0
+        assert result["technical_features"]["bb_upper"] == 460.0
+        assert len(result["technical_features"]) == 5
 
     def test_handles_missing_files(self) -> None:
         state = make_empty_state("SPY")
@@ -264,8 +303,72 @@ class TestLoadContext:
             "src.agents.graph._PREDICTIONS_DIR", Path("/nonexistent")
         ):
             result = load_context(state)
-        # Should not crash, uses empty defaults
-        assert result["predictions"]["prob_up"] == 0.0
+        # Should not crash, uses neutral prior (0.5)
+        assert result["predictions"]["prob_up"] == 0.5
+
+    def test_nan_prob_up_defaults_to_neutral(self, tmp_path: Path) -> None:
+        """NaN prob_up in parquet must be replaced with 0.5 (neutral), not propagated."""
+        pred_df = pl.DataFrame({
+            "ticker": ["SPY"],
+            "prob_up": [float("nan")],
+            "expected_return": [0.01],
+        })
+        pred_df.write_parquet(tmp_path / "predictions.parquet")
+        state = make_empty_state("SPY")
+
+        with patch("src.agents.graph._PREDICTIONS_DIR", tmp_path):
+            result = load_context(state)
+
+        assert result["predictions"]["prob_up"] == 0.5
+        assert result["predictions"]["expected_return"] == 0.01
+
+    def test_nan_features_filtered_out(self, tmp_path: Path) -> None:
+        """NaN/Inf feature values must be dropped, not passed to LLM."""
+        feat_df = pl.DataFrame({
+            "ticker": ["SPY"],
+            "rsi_14": [65.0],
+            "bb_upper": [float("nan")],
+            "realized_vol_21": [float("inf")],
+            "obv": [5_000_000.0],
+        })
+        feat_df.write_parquet(tmp_path / "features.parquet")
+        state = make_empty_state("SPY")
+
+        with patch("src.agents.graph._PREDICTIONS_DIR", tmp_path):
+            result = load_context(state)
+
+        assert "rsi_14" in result["technical_features"]
+        assert "obv" in result["technical_features"]
+        assert "bb_upper" not in result["technical_features"]
+        assert "realized_vol_21" not in result["technical_features"]
+        assert len(result["technical_features"]) == 2
+
+    def test_nan_quantiles_filtered_out(self, tmp_path: Path) -> None:
+        """NaN quantile values must be dropped from the quantiles dict."""
+        pred_df = pl.DataFrame({
+            "ticker": ["SPY"],
+            "prob_up": [0.7],
+            "expected_return": [0.01],
+        })
+        pred_df.write_parquet(tmp_path / "predictions.parquet")
+
+        fc_df = pl.DataFrame({
+            "unique_id": ["SPY"],
+            "ds": [1],
+            "PatchTST-q0.1": [445.0],
+            "PatchTST-q0.5": [float("nan")],
+            "PatchTST-q0.9": [460.0],
+        })
+        fc_df.write_parquet(tmp_path / "forecast.parquet")
+        state = make_empty_state("SPY")
+
+        with patch("src.agents.graph._PREDICTIONS_DIR", tmp_path):
+            result = load_context(state)
+
+        quantiles = result["predictions"]["quantiles"]
+        assert "q0.1" in quantiles
+        assert "q0.9" in quantiles
+        assert "q0.5" not in quantiles
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +451,7 @@ class TestRAGRetrieval:
 class TestTechnicalAnalyst:
     """technical_analyst node."""
 
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_returns_single_report(
         self,
         mock_chat_cls: MagicMock,
@@ -365,7 +468,7 @@ class TestTechnicalAnalyst:
         assert len(result["reports"]) == 1
         assert result["reports"][0]["agent"] == "technical"
 
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_returns_debate_log_entry(
         self,
         mock_chat_cls: MagicMock,
@@ -381,7 +484,7 @@ class TestTechnicalAnalyst:
         assert len(result["debate_log"]) == 1
         assert "Technical Analyst" in result["debate_log"][0]
 
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_forces_agent_field(
         self,
         mock_chat_cls: MagicMock,
@@ -410,7 +513,7 @@ class TestTechnicalAnalyst:
 class TestFundamentalAnalyst:
     """fundamentalist_analyst node."""
 
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_returns_single_report(
         self,
         mock_chat_cls: MagicMock,
@@ -434,7 +537,7 @@ class TestFundamentalAnalyst:
         assert len(result["reports"]) == 1
         assert result["reports"][0]["agent"] == "fundamental"
 
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_includes_previous_reports_in_prompt(
         self,
         mock_chat_cls: MagicMock,
@@ -460,7 +563,7 @@ class TestFundamentalAnalyst:
         assert "TECHNICAL" in user_msg
         assert "RSI strong" in user_msg
 
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_includes_news_context_in_prompt(
         self,
         mock_chat_cls: MagicMock,
@@ -494,7 +597,7 @@ class TestFundamentalAnalyst:
 class TestBearAgent:
     """bear_agent node."""
 
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_returns_single_report(
         self,
         mock_chat_cls: MagicMock,
@@ -523,7 +626,7 @@ class TestBearAgent:
         assert len(result["reports"]) == 1
         assert result["reports"][0]["agent"] == "bear"
 
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_forces_agent_field(
         self,
         mock_chat_cls: MagicMock,
@@ -542,6 +645,26 @@ class TestBearAgent:
         result = bear_agent(sample_state)
         assert result["reports"][0]["agent"] == "bear"
 
+    @patch("src.agents.graph._create_llm")
+    def test_clamps_bullish_to_neutral(
+        self,
+        mock_chat_cls: MagicMock,
+        sample_state: InvestmentState,
+    ) -> None:
+        """Bear agent must never output bullish — should be clamped to neutral."""
+        bullish_report = AgentReportModel(
+            agent="bear",
+            ticker="SPY",
+            signal="bullish",
+            confidence=0.6,
+            reasoning="Actually everything looks great.",
+            key_factors=["No risks found"],
+        )
+        mock_chat_cls.return_value = _make_mock_structured_llm(bullish_report)
+
+        result = bear_agent(sample_state)
+        assert result["reports"][0]["signal"] == "neutral"
+
 
 # ---------------------------------------------------------------------------
 # TestPortfolioManager
@@ -551,7 +674,7 @@ class TestBearAgent:
 class TestPortfolioManager:
     """portfolio_manager node."""
 
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_produces_final_decision(
         self,
         mock_chat_cls: MagicMock,
@@ -573,7 +696,7 @@ class TestPortfolioManager:
         assert result["final_decision"]["action"] == "BUY"
         assert result["final_decision"]["ticker"] == "SPY"
 
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_adds_debate_log(
         self,
         mock_chat_cls: MagicMock,
@@ -585,6 +708,90 @@ class TestPortfolioManager:
         result = portfolio_manager(sample_state)
 
         assert any("Portfolio Manager" in e for e in result["debate_log"])
+
+    @patch("src.agents.graph._create_llm")
+    def test_enforces_hold_on_low_confidence(
+        self,
+        mock_chat_cls: MagicMock,
+        sample_state: InvestmentState,
+    ) -> None:
+        """LLM returning BUY with confidence < 0.3 must be forced to HOLD/0.0."""
+        bad_decision = FinalDecisionModel(
+            ticker="SPY",
+            action="BUY",
+            confidence=0.15,
+            suggested_weight=0.10,
+            reasoning="Uncertain but buying anyway.",
+            dissenting_view="Bear sees major risk.",
+        )
+        mock_chat_cls.return_value = _make_mock_structured_llm(bad_decision)
+
+        result = portfolio_manager(sample_state)
+
+        assert result["final_decision"]["action"] == "HOLD"
+        assert result["final_decision"]["suggested_weight"] == 0.0
+        assert result["final_decision"]["confidence"] == 0.15
+
+    @patch("src.agents.graph._create_llm")
+    def test_preserves_valid_high_confidence_decision(
+        self,
+        mock_chat_cls: MagicMock,
+        sample_state: InvestmentState,
+        mock_decision: FinalDecisionModel,
+    ) -> None:
+        """Decisions with confidence >= 0.3 must NOT be overridden."""
+        mock_chat_cls.return_value = _make_mock_structured_llm(mock_decision)
+
+        result = portfolio_manager(sample_state)
+
+        assert result["final_decision"]["action"] == "BUY"
+        assert result["final_decision"]["suggested_weight"] == 0.15
+
+    @patch("src.agents.graph._create_llm")
+    def test_boundary_confidence_030_allows_action(
+        self,
+        mock_chat_cls: MagicMock,
+        sample_state: InvestmentState,
+    ) -> None:
+        """Exact boundary confidence=0.3 must NOT trigger HOLD enforcement."""
+        boundary_decision = FinalDecisionModel(
+            ticker="SPY",
+            action="BUY",
+            confidence=0.3,
+            suggested_weight=0.10,
+            reasoning="Borderline but acting.",
+            dissenting_view="Close call.",
+        )
+        mock_chat_cls.return_value = _make_mock_structured_llm(boundary_decision)
+
+        result = portfolio_manager(sample_state)
+
+        assert result["final_decision"]["action"] == "BUY"
+        assert result["final_decision"]["suggested_weight"] == 0.10
+        assert result["final_decision"]["confidence"] == 0.3
+
+    @patch("src.agents.graph._create_llm")
+    def test_enforces_zero_weight_on_sell(
+        self,
+        mock_chat_cls: MagicMock,
+        sample_state: InvestmentState,
+    ) -> None:
+        """LLM returning SELL with non-zero weight must be forced to 0.0."""
+        sell_decision = FinalDecisionModel(
+            ticker="SPY",
+            action="SELL",
+            confidence=0.8,
+            suggested_weight=0.15,
+            reasoning="Exiting position.",
+            dissenting_view="Could rebound.",
+        )
+        mock_chat_cls.return_value = _make_mock_structured_llm(sell_decision)
+
+        result = portfolio_manager(sample_state)
+
+        assert result["final_decision"]["action"] == "SELL"
+        assert result["final_decision"]["suggested_weight"] == 0.0
+        assert result["final_decision"]["confidence"] == 0.8
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +807,7 @@ class TestBuildInvestmentGraph:
         assert graph is not None
 
     @patch("src.agents.rag.FinancialRAG")
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_full_graph_execution(
         self,
         mock_chat_cls: MagicMock,
@@ -646,7 +853,7 @@ class TestBuildInvestmentGraph:
         assert len(result["debate_log"]) == 6
 
     @patch("src.agents.rag.FinancialRAG")
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_graph_state_accumulates(
         self,
         mock_chat_cls: MagicMock,
@@ -687,7 +894,7 @@ class TestBuildInvestmentGraph:
         assert result["final_decision"]["ticker"] == "SPY"
 
     @patch("src.agents.rag.FinancialRAG")
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_rag_news_flows_to_fundamentalist(
         self,
         mock_chat_cls: MagicMock,
@@ -749,7 +956,7 @@ class TestRunAgentDebate:
     """run_agent_debate() orchestrator."""
 
     @patch("src.agents.rag.FinancialRAG")
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_produces_decisions_for_all_tickers(
         self,
         mock_chat_cls: MagicMock,
@@ -778,13 +985,14 @@ class TestRunAgentDebate:
 
         mock_chat_cls.side_effect = make_llm
 
-        decisions = run_agent_debate(tickers=["SPY"])
+        decisions, full_states = run_agent_debate(tickers=["SPY"])
 
         assert len(decisions) == 1
         assert decisions[0]["action"] == "BUY"
+        assert "SPY" in full_states
 
     @patch("src.agents.rag.FinancialRAG")
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_multiple_tickers(
         self,
         mock_chat_cls: MagicMock,
@@ -823,12 +1031,14 @@ class TestRunAgentDebate:
 
         mock_chat_cls.side_effect = make_llm
 
-        decisions = run_agent_debate(tickers=["SPY", "NVDA"])
+        decisions, full_states = run_agent_debate(tickers=["SPY", "NVDA"])
 
         assert len(decisions) == 2
+        assert "SPY" in full_states
+        assert "NVDA" in full_states
 
     @patch("src.agents.rag.FinancialRAG")
-    @patch("src.agents.graph.ChatAnthropic")
+    @patch("src.agents.graph._create_llm")
     def test_hold_decision_for_low_confidence(
         self,
         mock_chat_cls: MagicMock,
@@ -861,8 +1071,64 @@ class TestRunAgentDebate:
 
         mock_chat_cls.side_effect = make_llm
 
-        decisions = run_agent_debate(tickers=["QQQ"])
+        decisions, full_states = run_agent_debate(tickers=["QQQ"])
 
         assert len(decisions) == 1
         assert decisions[0]["action"] == "HOLD"
         assert decisions[0]["confidence"] == 0.2
+        assert "QQQ" in full_states
+
+    @patch("src.agents.rag.FinancialRAG")
+    @patch("src.agents.graph._create_llm")
+    def test_streaming_callback_receives_correct_node_names(
+        self,
+        mock_chat_cls: MagicMock,
+        mock_rag_cls: MagicMock,
+        mock_technical_report: AgentReportModel,
+        mock_fundamental_report: AgentReportModel,
+        mock_bear_report: AgentReportModel,
+        mock_decision: FinalDecisionModel,
+    ) -> None:
+        """on_node_complete must receive actual graph node names, not state keys."""
+        mock_rag_cls.return_value.retrieve.return_value = []
+
+        responses = iter([
+            mock_technical_report,
+            mock_fundamental_report,
+            mock_bear_report,
+            mock_decision,
+        ])
+
+        def make_llm(*args: object, **kwargs: object) -> MagicMock:
+            mock_llm = MagicMock()
+            mock_structured = MagicMock()
+            mock_structured.invoke.return_value = next(responses)
+            mock_llm.with_structured_output.return_value = mock_structured
+            return mock_llm
+
+        mock_chat_cls.side_effect = make_llm
+
+        callback_calls: list[tuple[str, str]] = []
+
+        def on_node(ticker: str, node: str, output: dict) -> None:
+            callback_calls.append((ticker, node))
+
+        decisions, full_states = run_agent_debate(
+            tickers=["SPY"], on_node_complete=on_node
+        )
+
+        # Must produce a valid decision
+        assert len(decisions) == 1
+        assert decisions[0]["action"] == "BUY"
+
+        # Callback must have been called with real node names
+        node_names = [name for _, name in callback_calls]
+        expected_nodes = [
+            "load_context", "rag_retrieval", "technical",
+            "fundamental", "bear", "portfolio_manager",
+        ]
+        assert node_names == expected_nodes
+
+        # Full state must be correctly accumulated
+        assert len(full_states["SPY"]["reports"]) == 3
+        assert len(full_states["SPY"]["debate_log"]) == 6

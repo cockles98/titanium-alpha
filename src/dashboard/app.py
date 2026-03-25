@@ -482,28 +482,30 @@ def _load_validation_results() -> dict[str, Any] | None:
         return None
 
 
-# Validated strategy configuration (Session 35 — CPCV-OOS approved)
+# Validated strategy configuration (Session 39 — CPCV-OOS 3-tier, 547 configs)
 _VALIDATED_CONFIG: dict[str, Any] = {
     "Model Factory": "NaiveModelFactory(lookback=5)",
-    "rebalance_every": 13,
+    "rebalance_every": 15,
     "retrain_every": 126,
     "lookback_days": 756,
-    "costs": "slippage=5bps + commission=10bps",
+    "costs": "slippage=5bps & commission=10bps",
     "min_rebalance_delta": 0.02,
-    "target_vol": "None (disabled)",
+    "target_vol": "10% annualized (63-day lookback, 0.5-1.0 leverage)",
     "HRP linkage": "ward",
     "HRP shrinkage": "Ledoit-Wolf",
-    "max_weight": "min(0.25, 2/n)",
+    "HRP correlation": "pearson",
+    "max_weight": "min(0.06, 2/n)",
 }
 
-# Key findings from stress testing
+# Key findings from 3-tier CPCV-OOS grid search (547 configs)
 _STRESS_FINDINGS: list[str] = [
-    "5-day momentum + biweekly rebalance (rb=13) validated via CPCV-OOS.",
-    "Ward linkage + Ledoit-Wolf shrinkage: +0.03 Sharpe each vs defaults.",
-    "Strategy supports up to ~30 bps total cost with positive OOS alpha.",
-    "Vol targeting disabled — hurts performance on this universe.",
-    "Max weight cap at min(0.25, 2/n) per asset.",
+    "Triweekly rebalance (rb=15) validated via 3-tier CPCV-OOS (547 configs).",
+    "Vol targeting at 10%: single biggest driver (+0.035 Sharpe, MaxDD halved).",
+    "Ward linkage + Ledoit-Wolf shrinkage: confirmed dominant HRP structure.",
+    "max_weight relaxed from min(0.25, 2/n) to min(0.06, 2/n): +0.026 Sharpe.",
+    "top_n and killswitch both harmful — disabled.",
     "Transaction costs: slippage 5bps + commission 10bps fully reflected.",
+    "Record: Sharpe=0.712, CAGR=13.35%, MaxDD=-18.43%, Beta=0.532.",
 ]
 
 
@@ -524,7 +526,7 @@ def tab_benchmark(
 
     # --- Strategy Configuration expander
     with st.expander("Strategy Configuration (CPCV-OOS validated)", expanded=False):
-        st.caption("Parameters validated via Deflated Sharpe Ratio on 15 CPCV-OOS paths.")
+        st.caption("Parameters validated via 3-tier CPCV-OOS grid search (547 configs, 15 paths each).")
         cfg_col1, cfg_col2 = st.columns(2)
         cfg_items = list(_VALIDATED_CONFIG.items())
         mid_cfg = len(cfg_items) // 2
@@ -1466,6 +1468,14 @@ def _run_live_debate_thread(
         result_queue: Queue for posting (event_type, data) tuples.
     """
     try:
+        import sys
+        from pathlib import Path
+
+        # Ensure project root is on sys.path so "src." imports resolve
+        _project_root = str(Path(__file__).resolve().parents[2])
+        if _project_root not in sys.path:
+            sys.path.insert(0, _project_root)
+
         from src.agents.graph import run_agent_debate
 
         def on_node(ticker: str, node: str, output: dict) -> None:

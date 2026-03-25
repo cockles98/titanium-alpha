@@ -30,6 +30,7 @@ env/
 # Data outputs (generated at runtime)
 data/outputs/
 models/checkpoints/
+models/wf_cache/
 
 # Notebooks output
 notebooks/*.ipynb

@@ -52,13 +52,13 @@ O `DecisionEngine` passa o `prob_up` como **contexto nos prompts dos agentes**, 
 
 ## Consequência
 
-O **Sharpe de ~2.7 validado pelo CPCV-OOS** (`make validate`) foi calculado usando apenas o sinal do PatchTST, sem agentes. Esse número **não representa** a performance do sistema completo com debate LangGraph.
+O walk-forward benchmark (`make benchmark`) valida o sinal PatchTST (ou NaiveModelFactory) **sem agentes**. O Sharpe validado (~0.710 com config fine-tuned) reflete esse pipeline simplificado.
 
-Em outras palavras:
+> **Nota histórica:** versões anteriores reportavam Sharpe ~2.7 no CPCV-OOS, mas esse resultado era inflado por look-ahead bias na ingestão de dados (bug de thread-safety no yf.download()). Após a correção (sessão 37-38), a mesma config produziu Sharpe ~0.5. O recorde atual (0.710) foi atingido após fine-tuning de 547 configs na sessão 39.
 
 | Pipeline | Sinal usado | Backtestado? | Sharpe validado? |
 |----------|-------------|--------------|------------------|
-| `make benchmark` | PatchTST `prob_up` direto | Sim | Sim (~2.7) |
+| `make benchmark` | PatchTST `prob_up` direto | Sim | Sim (0.710) |
 | `make decide` | Debate LangGraph (4 agentes) | Não | Não |
 
 O sistema de produção nunca foi backtestado. Não há evidência quantitativa de que o debate multi-agente melhora ou piora a performance em relação ao PatchTST sozinho.

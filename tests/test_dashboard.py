@@ -717,9 +717,9 @@ class TestValidatedConfig:
         assert "HRP shrinkage" in _VALIDATED_CONFIG
 
     def test_config_values(self) -> None:
-        assert _VALIDATED_CONFIG["rebalance_every"] == 13
-        assert _VALIDATED_CONFIG["target_vol"] == "None (disabled)"
-        assert _VALIDATED_CONFIG["max_weight"] == "min(0.25, 2/n)"
+        assert _VALIDATED_CONFIG["rebalance_every"] == 15
+        assert _VALIDATED_CONFIG["target_vol"] == "10% annualized (63-day lookback, 0.5-1.0 leverage)"
+        assert _VALIDATED_CONFIG["max_weight"] == "min(0.06, 2/n)"
         assert _VALIDATED_CONFIG["lookback_days"] == 756
 
     def test_stress_findings_not_empty(self) -> None:

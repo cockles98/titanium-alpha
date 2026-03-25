@@ -193,11 +193,22 @@ class PredictionPipeline:
             features_df.width,
         )
 
-        # 3. Train PatchTST
-        forecaster = TitaniumForecaster(
-            max_steps=self.max_steps,
-        )
-        forecaster.fit(features_df, val_size=self.val_size)
+        # 3. Train PatchTST (or load from checkpoint)
+        checkpoint_dir = str(self.output_dir / "model_checkpoint")
+        expected = TitaniumForecaster(max_steps=self.max_steps).get_params()
+        try:
+            forecaster = TitaniumForecaster.load(
+                checkpoint_dir, expect_params=expected,
+            )
+            logger.info("Loaded PatchTST from checkpoint — skipping training")
+        except Exception as exc:
+            logger.info("No valid checkpoint ({}); training from scratch", exc)
+            forecaster = TitaniumForecaster(
+                max_steps=self.max_steps,
+            )
+            forecaster.fit(features_df, val_size=self.val_size)
+            forecaster.save(checkpoint_dir)
+            logger.info("Checkpoint saved to {}", checkpoint_dir)
 
         # 4. Generate forecasts (single predict call, reused for prob_up)
         forecast_df = forecaster.predict()
@@ -214,13 +225,34 @@ class PredictionPipeline:
         predictions_path = self.output_dir / "predictions.parquet"
         forecast_path = self.output_dir / "forecast.parquet"
         metrics_path = self.output_dir / "metrics.parquet"
+        features_path = self.output_dir / "features.parquet"
 
         proba_df.write_parquet(predictions_path)
         forecast_df.write_parquet(forecast_path)
         metrics_df.write_parquet(metrics_path)
 
+        # Save latest feature snapshot per ticker for the agent pipeline
+        _FEATURE_COLS = [
+            "rsi_14", "bb_upper", "bb_middle", "bb_lower",
+            "realized_vol_21", "volume_sma", "relative_volume", "vwap", "obv",
+        ]
+        feature_cols_present = [c for c in _FEATURE_COLS if c in features_df.columns]
+        if feature_cols_present:
+            latest_features = (
+                features_df.sort("date")
+                .group_by("ticker")
+                .last()
+                .select(["ticker"] + feature_cols_present)
+            )
+            latest_features.write_parquet(features_path)
+            logger.info(
+                "Features snapshot saved: {} tickers × {} indicators",
+                latest_features.height,
+                len(feature_cols_present),
+            )
+
         logger.info(
-            "Outputs saved to {}: predictions.parquet, forecast.parquet, metrics.parquet",
+            "Outputs saved to {}: predictions, forecast, metrics, features",
             self.output_dir,
         )
 

@@ -453,18 +453,44 @@ class TitaniumForecaster:
 
         logger.info("Model saved to {}", save_dir)
 
+    _PARAM_KEYS: list[str] = [
+        "h", "input_size", "batch_size", "max_steps",
+        "learning_rate", "quantiles", "random_seed",
+    ]
+
+    def get_params(self) -> dict[str, Any]:
+        """Return current hyperparameters as a dict for cache validation."""
+        return {
+            "h": self.h,
+            "input_size": self.input_size,
+            "batch_size": self.batch_size,
+            "max_steps": self.max_steps,
+            "learning_rate": self.learning_rate,
+            "quantiles": self.quantiles,
+            "random_seed": self.random_seed,
+        }
+
     @classmethod
-    def load(cls, path: str = "models/checkpoints") -> TitaniumForecaster:
+    def load(
+        cls,
+        path: str = "models/checkpoints",
+        expect_params: dict[str, Any] | None = None,
+    ) -> TitaniumForecaster:
         """Load a previously saved model from disk.
 
         Args:
             path: Directory containing the saved model files.
+            expect_params: If provided, validate that the cached model
+                was trained with these hyperparameters.  Keys must be a
+                subset of ``_PARAM_KEYS``.  Raises ``ValueError`` on
+                mismatch so the caller can retrain.
 
         Returns:
             A fitted TitaniumForecaster instance.
 
         Raises:
             FileNotFoundError: If the path or metadata file does not exist.
+            ValueError: If ``expect_params`` does not match saved metadata.
         """
         load_dir = Path(path)
 
@@ -473,6 +499,20 @@ class TitaniumForecaster:
             raise FileNotFoundError(f"Metadata not found at {metadata_path}")
 
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+        # Validate hyperparams if caller provided expectations
+        if expect_params is not None:
+            mismatches: list[str] = []
+            for key, expected in expect_params.items():
+                saved = metadata.get(key)
+                if saved != expected:
+                    mismatches.append(
+                        f"{key}: saved={saved!r}, expected={expected!r}"
+                    )
+            if mismatches:
+                raise ValueError(
+                    f"Cached model params mismatch: {'; '.join(mismatches)}"
+                )
 
         forecaster = cls(
             h=metadata.get("h", 5),
