@@ -14,10 +14,10 @@ Features:
   - Cross-tier dedup: same parameter fingerprint never runs twice
   - Holdout validation: champion tested on unseen temporal holdout (n_trials=1)
 
-Time budget (NaiveModelFactory, C(6,2)=15 CPCV-OOS paths):
+Time budget (C(6,2)=15 CPCV-OOS paths):
 
-  - ~375s per config validation (25s x 15 paths)
-  - ~172 configs per 18h
+  - NaiveModelFactory: ~375s per config (25s x 15 paths), ~172 configs per 18h
+  - PatchTST (cached): ~inference-only per path, slower but uses real signal
 
 Usage::
 
@@ -29,6 +29,7 @@ Usage::
     python -m src.backtest.run_validation --holdout --holdout-years=3
     python -m src.backtest.run_validation --estimate       # Time 1 config
     python -m src.backtest.run_validation --dry-run        # Print grid, no execution
+    python -m src.backtest.run_validation --tier 1 --patchtst  # Use cached PatchTST
 
 PatchTST cache interaction
 --------------------------
@@ -90,6 +91,7 @@ from src.backtest.cpcv_oos import (
 )
 from src.backtest.walk_forward import (
     KillswitchConfig,
+    ModelFactory,
     NaiveModelFactory,
     WalkForwardBacktester,
     WalkForwardConfig,
@@ -106,6 +108,10 @@ _OUTPUT_DIR = Path("data/outputs")
 _BASE_COSTS = TransactionCosts(slippage_bps=5.0, commission_bps=10.0)
 _SAVE_EVERY = 5
 _DEFAULT_HOLDOUT_YEARS = 2
+
+# Model factory toggle — set by CLI (--patchtst) or programmatically.
+# When True, uses _PatchTSTModelFactory (cached) instead of NaiveModelFactory.
+_USE_PATCHTST: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +506,7 @@ class Trial:
 
     name: str
     wf_config: WalkForwardConfig
-    factory: NaiveModelFactory
+    factory: ModelFactory
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +517,20 @@ class Trial:
 def _dyn_maxw(n: int) -> float:
     """Dynamic max_weight = min(0.25, 2/n)."""
     return min(0.25, 2.0 / max(n, 1))
+
+
+def _make_factory() -> ModelFactory:
+    """Create the model factory based on ``_USE_PATCHTST`` toggle.
+
+    When ``_USE_PATCHTST`` is True, imports and returns a
+    ``_PatchTSTModelFactory`` (with cache enabled) from
+    ``run_benchmark``.  Otherwise returns a ``NaiveModelFactory``.
+    """
+    if _USE_PATCHTST:
+        from src.backtest.run_benchmark import _PatchTSTModelFactory
+
+        return _PatchTSTModelFactory(cache_enabled=True)
+    return NaiveModelFactory(lookback=5)
 
 
 def _hrp(n: int, **kw: Any) -> HRPConfig:
@@ -560,7 +580,7 @@ def _t(n: int, name: str, **wf_kw: Any) -> Trial:
     matches the parameter fingerprint.  Momentum is fixed at 5 (PatchTST-safe).
     """
     wf_kw.setdefault("hrp_config", _hrp(n))
-    return Trial(name=name, wf_config=_wf(**wf_kw), factory=NaiveModelFactory(lookback=5))
+    return Trial(name=name, wf_config=_wf(**wf_kw), factory=_make_factory())
 
 
 def _trial_params(trial: Trial, n: int) -> dict[str, Any]:
@@ -570,7 +590,7 @@ def _trial_params(trial: Trial, n: int) -> dict[str, Any]:
     ks = cfg.killswitch
     costs = cfg.costs or TransactionCosts()
     return {
-        "momentum_lookback": trial.factory.lookback,
+        "momentum_lookback": getattr(trial.factory, "lookback", None),
         "rebalance_every": cfg.rebalance_every,
         "retrain_every": cfg.retrain_every,
         "lookback_days": cfg.lookback_days,
@@ -660,7 +680,7 @@ def _trial_from_params(name: str, params: dict[str, Any], n: int) -> Trial:
         hrp_config=hrp,
         top_n=params.get("top_n"),
     )
-    factory = NaiveModelFactory(lookback=params.get("momentum_lookback", 5))
+    factory = _make_factory()
     return Trial(name=name, wf_config=wf, factory=factory)
 
 
@@ -1530,6 +1550,11 @@ def run_improvement_validation(
 
 def _cli_main() -> None:
     """Entry point for ``python -m src.backtest.run_validation``."""
+    global _USE_PATCHTST  # noqa: PLW0603
+    if "--patchtst" in sys.argv:
+        _USE_PATCHTST = True
+        logger.info("Using PatchTST model factory (cached)")
+
     tier_str = "1"
     if "--tier" in sys.argv:
         idx = sys.argv.index("--tier")

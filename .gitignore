@@ -57,3 +57,9 @@ chromadata/
 
 # Logs
 *.log
+
+# PyTorch Lightning training artifacts
+lightning_logs/
+
+# Local agent config (Claude Code custom rules/workflows)
+.agents/

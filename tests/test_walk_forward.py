@@ -460,6 +460,7 @@ class TestWalkForwardRun:
             lookback_days=100,
             rebalance_every=20,
             retrain_every=200,
+            min_rebalance_delta=0.0,  # disable delta filter for frequency test
         )
         bt = WalkForwardBacktester(config=cfg)
         result = bt.run(

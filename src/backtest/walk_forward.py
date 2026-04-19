@@ -610,6 +610,13 @@ class WalkForwardBacktester:
             # -- Rebalance check (skip when in cash)
             rebalanced = False
             if not in_cash and days_since_rebalance >= cfg.rebalance_every:
+                # Reset counter unconditionally so we check again in
+                # rebalance_every days, even when min_rebalance_delta
+                # prevents actual trading.  Without this reset, predict+HRP
+                # would run every subsequent day (days_since_rebalance keeps
+                # growing past the threshold).
+                days_since_rebalance = 0
+
                 # Predict — use decision_date (t-1) to avoid leaking
                 # day-t's close into the signal.
                 predict_data = ohlcv.filter(
@@ -752,7 +759,6 @@ class WalkForwardBacktester:
                         )
                     )
                     rebalanced = True
-                    days_since_rebalance = 0
 
                     logger.debug(
                         "Rebalanced on {}: turnover={:.4f} cost=${:.2f}",

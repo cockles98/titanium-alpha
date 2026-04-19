@@ -69,16 +69,31 @@ class _PurgedModelFactory:
         inner: The real model factory to delegate to.
         excluded_dates: Dates that must NOT be used for training
             (test dates + embargo dates from the CPCV path).
+        skip_train_purge: If True, passes the full (unpurged) DataFrame
+            to the inner factory's train().  Use this when the inner
+            factory loads a pre-trained model from cache (e.g.
+            _PatchTSTModelFactory) — purging would change the hash and
+            cause a cache miss, triggering an unnecessary retrain.
+            Metrics are still computed only on test dates, so CPCV
+            evaluation integrity is preserved.
     """
 
     def __init__(
-        self, inner: ModelFactory, excluded_dates: set[date]
+        self,
+        inner: ModelFactory,
+        excluded_dates: set[date],
+        *,
+        skip_train_purge: bool = False,
     ) -> None:
         self._inner = inner
         self._excluded = excluded_dates
+        self._skip_train_purge = skip_train_purge
 
     def train(self, df: pl.DataFrame) -> None:
         """Train the inner model on data excluding test/embargo dates."""
+        if self._skip_train_purge:
+            self._inner.train(df)
+            return
         filtered = df.filter(~pl.col("date").is_in(self._excluded))
         if filtered.height == 0:
             logger.warning(
@@ -512,8 +527,14 @@ class CPCVParameterValidator:
         train_date_set = set(train_dates)
         excluded_dates = set(self._trading_dates) - train_date_set
 
-        # Wrap the model factory to enforce train/test separation
-        purged_factory = _PurgedModelFactory(fresh_factory, excluded_dates)
+        # Wrap the model factory to enforce train/test separation.
+        # When the inner factory uses a model cache (e.g. PatchTST), skip
+        # purging the training data — the model is loaded from cache and
+        # purging would change the hash, causing unnecessary retrains.
+        skip_purge = getattr(fresh_factory, '_cache_enabled', False)
+        purged_factory = _PurgedModelFactory(
+            fresh_factory, excluded_dates, skip_train_purge=skip_purge,
+        )
 
         # Run walk-forward on the full data (backtester needs continuous
         # dates for return computation and weight drift).
