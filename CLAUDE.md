@@ -47,7 +47,7 @@ docs: apenas documentação
 - Benchmark: SPY buy-and-hold
 - Métricas-chave: Sharpe Ratio anualizado (rf=0.05), Max Drawdown, CAGR
 
-## Configuração validada (Walk-Forward Benchmark — CPCV-OOS 3-Tier, 547 configs)
+## Configuração validada (Walk-Forward Benchmark — CPCV-OOS 3-Tier, 982 configs total)
 - NaiveModelFactory(lookback=5) — 5-day momentum (proxy para CPCV-OOS)
 - rebalance_every=15 (~3 semanas), retrain_every=126 (semestral)
 - lookback_days=756 (~3 anos de covariância)
@@ -57,8 +57,10 @@ docs: apenas documentação
 - min_rebalance_delta=0.02
 - top_n=None, killswitch=None (ambos prejudiciais)
 - Baseline pré-tuning: Sharpe=0.611, CAGR=14.62%, MaxDD=-31.69%, Beta=0.842
-- Recorde walk-forward (pós fine-tuning): Sharpe=0.712, CAGR=13.35%, MaxDD=-18.43%, Beta=0.532
-- Análise completa: data/outputs/validation_3tier_analysis.md
+- Recorde walk-forward (pós fine-tuning sessão 39): Sharpe=0.712, CAGR=13.35%, MaxDD=-18.43%, Beta=0.532
+- TENTATIVA validation_6 (rb=21/mw=0.10): Sharpe=0.462 — REGRESSÃO, revertido
+- Análise completa: data/outputs/validation_3tier_analysis.md | data/outputs/validation_6/
+- LIÇÃO: max_weight solto (0.10) deixa HRP concentrar ~8.5% em DUK (utilities) — restrição 2/n é funcional
 
 ## Limitação conhecida: gap backtest-produção
 O pipeline de produção (make decide) usa debate LangGraph, que nunca foi backtestado.

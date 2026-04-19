@@ -411,7 +411,7 @@ def run_us_benchmark(
         hrp_config=HRPConfig(
             linkage_method="ward",     # CPCV-OOS validated (+0.03 vs single)
             shrinkage=True,            # Ledoit-Wolf (CPCV-OOS validated +0.03)
-            max_weight=min(0.06, 2 / n),  # relaxed from 0.25 (T3: +0.026 Sharpe)
+            max_weight=min(0.06, 2 / n),  # 2/n cap (~3.85% para n=52): força diversificação
         ),
         top_n=top_n,
     )
