@@ -160,6 +160,12 @@ class FinancialRAG:
             for art in batch:
                 doc = self._build_document(art)
                 if not doc or doc == ".":
+                    pg_ids.append(art["id"])
+                    logger.debug(
+                        "Article {} has empty content — marking as embedded to "
+                        "prevent infinite re-loading",
+                        art["id"],
+                    )
                     continue
 
                 art_date = art.get("date")
@@ -177,6 +183,8 @@ class FinancialRAG:
                 pg_ids.append(art["id"])
 
             if not documents:
+                if pg_ids:
+                    self._mark_as_embedded(pg_ids)
                 continue
 
             embeddings = self.model.encode(
@@ -235,9 +243,13 @@ class FinancialRAG:
         """
         cutoff = date.today() - timedelta(days=max_age_days)
         cutoff_str = str(cutoff)
+        today_str = str(date.today())
 
-        # Fetch more candidates than top_k to allow date reranking
-        n_results = min(top_k * 3, 50)
+        # Fetch a large pool of candidates so that post-hoc date filtering
+        # still yields enough recent articles.  ChromaDB's where operators
+        # ($gte/$lte) only support numeric types, so date filtering must be
+        # done in Python after the query returns.
+        n_results = min(top_k * 40, 500)
 
         try:
             results = self.collection.query(
@@ -260,7 +272,6 @@ class FinancialRAG:
         all_distances = results["distances"][0] if results.get("distances") else []
 
         # Filter by date cutoff and exclude future-dated articles
-        today_str = str(date.today())
         candidates: list[dict[str, Any]] = []
         for i, meta in enumerate(all_metadatas):
             article_date = meta.get("date", "")
@@ -313,22 +324,3 @@ class FinancialRAG:
         """
         return self.collection.count()
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _date_sort_key(date_str: str) -> str:
-    """Convert a date string to a sortable key.
-
-    Returns the date string itself (ISO format sorts lexicographically)
-    or an empty string for missing dates (sorts last when reversed).
-
-    Args:
-        date_str: Date string in ``YYYY-MM-DD`` format.
-
-    Returns:
-        Sortable string key.
-    """
-    return date_str if date_str else ""

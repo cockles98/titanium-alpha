@@ -37,6 +37,7 @@ Usage::
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Protocol, runtime_checkable
@@ -106,12 +107,14 @@ class NaiveModelFactory:
         """No-op — NaiveModelFactory does not train."""
 
     def predict(self, df: pl.DataFrame) -> dict[str, float]:
-        """Return momentum-based confidence per ticker.
+        """Return momentum-based confidence per ticker using a true sigmoid.
 
         Returns:
-            ``{ticker: confidence}`` where confidence is in ``[0, 1]``.
-            Positive momentum → confidence > 0.5.
+            {ticker: confidence} where confidence asymptotically approaches
+            0 and 1. Positive momentum → confidence > 0.5.
         """
+        import math
+        
         scores: dict[str, float] = {}
         for ticker in df["ticker"].unique().sort().to_list():
             closes = (
@@ -122,16 +125,57 @@ class NaiveModelFactory:
             if closes.len() < 2:
                 scores[ticker] = 0.5
                 continue
+                
             ret = (closes[-1] - closes[0]) / closes[0]
-            # Clamp to [0.05, 0.95]
-            conf = max(0.05, min(0.95, 0.5 + ret * 10))
-            scores[ticker] = conf
+            
+            # Fator k (steepness) da sigmóide, escalado inversamente pelo lookback
+            k = 50.0 / max(self.lookback, 1)
+            
+            # Aplicação da função logística (Sigmóide)
+            # Retorna um valor no intervalo (0, 1) suavemente
+            conf = 1.0 / (1.0 + math.exp(-k * ret))
+            
+            # Opcional: manter os limites estritos [0.05, 0.95] se a otimização
+            # do HRP exigir que nenhum peso chegue a zero absoluto tão rápido.
+            scores[ticker] = max(0.05, min(0.95, conf))
+            
         return scores
 
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class KillswitchConfig:
+    """Configuration for the drawdown killswitch.
+
+    When portfolio drawdown breaches ``max_drawdown_pct``, all holdings
+    are liquidated (moved to cash).  Re-entry occurs after the
+    **benchmark** drawdown recovers above ``recovery_threshold_pct``
+    for ``ramp_up_days`` consecutive trading days.
+
+    Using the benchmark (not the portfolio) for recovery avoids the
+    logical bug where the portfolio never exits cash because its own
+    drawdown is frozen while in cash.
+
+    Upon re-entry, ``peak_value`` is reset to the current portfolio
+    value to avoid immediate re-triggering from stale peaks.
+
+    Attributes:
+        max_drawdown_pct: Drawdown threshold to trigger cash exit
+            (negative, e.g. ``-0.15`` for -15%).
+        recovery_threshold_pct: Benchmark drawdown level at which
+            recovery countdown begins (negative, e.g. ``-0.05``).
+        ramp_up_days: Number of consecutive days the benchmark must
+            stay above ``recovery_threshold_pct`` before re-entry.
+            Must be >= 1.
+    """
+
+    max_drawdown_pct: float = -0.15
+    recovery_threshold_pct: float = -0.05
+    ramp_up_days: int = 21
 
 
 @dataclass(frozen=True)
@@ -149,6 +193,29 @@ class WalkForwardConfig:
             change is below this threshold.
         trading_days_per_year: For annualisation of metrics.
         rf: Annual risk-free rate.
+        target_vol: Target annualised portfolio volatility.  When
+            ``None`` (default), no volatility targeting is applied.
+            Example: ``0.10`` for 10% annual vol.
+        vol_lookback: Rolling window (trading days) for realised
+            volatility estimation.  Default 63 (~one quarter).
+        max_leverage: Upper bound on the vol-targeting leverage
+            factor.  ``1.0`` means no leverage (long-only).
+        min_leverage: Lower bound on exposure.  ``0.5`` means the
+            portfolio never goes below 50% invested.  Set to ``0.0``
+            for a full volatility killswitch.
+        margin_spread: Annual spread above ``rf`` charged on borrowed
+            margin (leverage > 1).  For example ``0.015`` for 150 bps.
+            The total annual borrow cost is ``rf + margin_spread``.
+            Cash (leverage < 1) earns ``rf`` pro-rata.  When the
+            killswitch is active, the full portfolio earns ``rf``.
+        killswitch: Drawdown killswitch configuration.  When ``None``
+            (default), no killswitch is active.
+        hrp_config: HRP optimizer configuration.  When ``None``
+            (default), a dynamic config is created with
+            ``max_weight=min(0.25, 2/n)``.
+        top_n: Number of top-scoring tickers to include at each
+            rebalance.  When ``None`` (default), all available
+            tickers are used.  Must be >= 1 when set.
     """
 
     retrain_every: int = 126
@@ -156,9 +223,17 @@ class WalkForwardConfig:
     lookback_days: int = 504
     initial_capital: float = 1_000_000.0
     costs: TransactionCosts | None = None
-    min_rebalance_delta: float = 0.0
+    min_rebalance_delta: float = 0.02
     trading_days_per_year: int = 252
     rf: float = 0.05
+    target_vol: float | None = None
+    vol_lookback: int = 63
+    max_leverage: float = 1.0
+    min_leverage: float = 0.5
+    margin_spread: float = 0.015
+    killswitch: KillswitchConfig | None = None
+    hrp_config: HRPConfig | None = None
+    top_n: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +300,25 @@ class WalkForwardBacktester:
 
     def __init__(self, config: WalkForwardConfig | None = None) -> None:
         self.config = config or WalkForwardConfig()
+        cfg = self.config
+        if cfg.target_vol is not None:
+            if cfg.vol_lookback < 2:
+                raise ValueError(
+                    f"vol_lookback must be >= 2, got {cfg.vol_lookback}"
+                )
+            if cfg.max_leverage < cfg.min_leverage:
+                raise ValueError(
+                    f"max_leverage ({cfg.max_leverage}) must be >= "
+                    f"min_leverage ({cfg.min_leverage})"
+                )
+        if cfg.top_n is not None and cfg.top_n < 1:
+            raise ValueError(f"top_n must be >= 1, got {cfg.top_n}")
+        if cfg.killswitch is not None:
+            if cfg.killswitch.ramp_up_days < 1:
+                raise ValueError(
+                    f"ramp_up_days must be >= 1, "
+                    f"got {cfg.killswitch.ramp_up_days}"
+                )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -300,11 +394,20 @@ class WalkForwardBacktester:
         wide = (
             log_ret.pivot(on="ticker", index="date", values="log_return")
             .sort("date")
-            .drop_nulls()
         )
 
-        # Remove date column, keep only ticker columns
+        # Drop leading rows where any ticker has null (incomplete history),
+        # then fill remaining interior nulls with 0.0.  This avoids both
+        # the old drop_nulls() (too aggressive — drops rows if ANY null)
+        # and pure fill_null(0.0) (deflates variance for short-history tickers).
         ticker_cols = [c for c in wide.columns if c != "date"]
+        all_present = pl.all_horizontal(
+            pl.col(c).is_not_null() for c in ticker_cols
+        )
+        first_complete_idx = wide.with_row_index("_idx").filter(all_present)["_idx"]
+        if first_complete_idx.len() > 0:
+            wide = wide.slice(int(first_complete_idx[0]))
+        wide = wide.fill_null(0.0)
 
         if wide.height > lookback:
             wide = wide.tail(lookback)
@@ -378,6 +481,9 @@ class WalkForwardBacktester:
         if model_factory is None:
             model_factory = NaiveModelFactory()
 
+        # Remove duplicatas preservando a ordem
+        tickers = list(dict.fromkeys(tickers))
+
         # ---- Prepare daily returns (wide) for all tickers + benchmark
         all_tickers = list(set(tickers) | {benchmark_ticker})
         returns_wide = self._compute_daily_returns(ohlcv, all_tickers)
@@ -416,11 +522,12 @@ class WalkForwardBacktester:
         )
 
         # ---- State variables
-        # Track per-asset dollar values (weight drift between rebalances)
-        equal_w = 1.0 / len(available_tickers)
+        # Inicialização institucional: Fundo nasce 100% em caixa.
+        # O primeiro rebalanceamento pagará o custo total de montagem da carteira.
         holdings: dict[str, float] = {
-            t: cfg.initial_capital * equal_w for t in available_tickers
+            t: 0.0 for t in available_tickers
         }
+        cash = cfg.initial_capital
         portfolio_value = cfg.initial_capital
         benchmark_value = cfg.initial_capital
 
@@ -435,21 +542,40 @@ class WalkForwardBacktester:
         days_since_rebalance = cfg.rebalance_every  # force initial rebalance
         total_retrains = 0
 
-        # HRP config with dynamic max_weight
+        # HRP config: use provided or dynamic max_weight
         n = len(available_tickers)
-        hrp_config = HRPConfig(max_weight=min(0.25, 2.0 / n))
+        if cfg.hrp_config is not None:
+            hrp_config = cfg.hrp_config
+        else:
+            hrp_config = HRPConfig(max_weight=min(0.25, 2.0 / n))
+
+        # Killswitch state
+        in_cash = False
+        days_recovering = 0
+        peak_value = cfg.initial_capital
+        bench_peak = cfg.initial_capital
 
         # ---- Main loop
         for i, current_date in enumerate(active_dates):
             # Row index in returns_wide
             row_idx = warmup_end + i
 
-            # -- Retrain check
+            # The decision cutoff is the PREVIOUS trading day.
+            # On day t we decide using data up to t-1, then earn
+            # day-t's return (close_t / close_{t-1} - 1).  Using
+            # current_date would leak close_t into the signal.
+            decision_date = trading_dates[row_idx - 1]
+
+            # Capture start-of-day value before costs/rebalance so that
+            # port_ret correctly includes transaction cost drag.
+            portfolio_value_start_of_day = portfolio_value
+
+            # -- Retrain check (skip when in cash — nothing to trade)
             retrained = False
-            if days_since_retrain >= cfg.retrain_every:
+            if not in_cash and days_since_retrain >= cfg.retrain_every:
                 train_data = ohlcv.filter(
                     (pl.col("ticker").is_in(available_tickers))
-                    & (pl.col("date") <= current_date)
+                    & (pl.col("date") <= decision_date)
                 ).sort(["ticker", "date"])
 
                 # Trim to lookback
@@ -481,38 +607,114 @@ class WalkForwardBacktester:
 
             days_since_retrain += 1
 
-            # -- Rebalance check
+            # -- Rebalance check (skip when in cash)
             rebalanced = False
-            if days_since_rebalance >= cfg.rebalance_every:
-                # Predict
+            if not in_cash and days_since_rebalance >= cfg.rebalance_every:
+                # Reset counter unconditionally so we check again in
+                # rebalance_every days, even when min_rebalance_delta
+                # prevents actual trading.  Without this reset, predict+HRP
+                # would run every subsequent day (days_since_rebalance keeps
+                # growing past the threshold).
+                days_since_rebalance = 0
+
+                # Predict — use decision_date (t-1) to avoid leaking
+                # day-t's close into the signal.
                 predict_data = ohlcv.filter(
                     (pl.col("ticker").is_in(available_tickers))
-                    & (pl.col("date") <= current_date)
+                    & (pl.col("date") <= decision_date)
                 ).sort(["ticker", "date"])
 
                 confidences = model_factory.predict(predict_data)
 
-                # HRP
+                # -- Top-N ticker selection
+                if cfg.top_n is not None:
+                    effective_top_n = min(cfg.top_n, len(confidences))
+                    sorted_tickers = sorted(
+                        confidences.keys(),
+                        key=lambda t: (
+                            confidences[t]
+                            if math.isfinite(confidences[t])
+                            else float("-inf")
+                        ),
+                        reverse=True,
+                    )
+                    selected_tickers = sorted_tickers[:effective_top_n]
+                    confidences = {
+                        t: confidences[t] for t in selected_tickers
+                    }
+                    logger.debug(
+                        "Top-{} selected on {}: {}",
+                        effective_top_n,
+                        current_date,
+                        selected_tickers,
+                    )
+                else:
+                    selected_tickers = list(available_tickers)
+
+                # Adapt HRP max_weight to the selected universe
+                n_sel = len(selected_tickers)
+                if cfg.top_n is not None:
+                    rebalance_hrp_config = HRPConfig(
+                        linkage_method=hrp_config.linkage_method,
+                        correlation_method=hrp_config.correlation_method,
+                        shrinkage=hrp_config.shrinkage,
+                        confidence_tilt_cap=hrp_config.confidence_tilt_cap,
+                        min_weight=hrp_config.min_weight,
+                        max_weight=min(0.25, 2.0 / n_sel),
+                        turnover_threshold=hrp_config.turnover_threshold,
+                    )
+                else:
+                    rebalance_hrp_config = hrp_config
+
+                # HRP — covariance estimated up to decision_date (t-1)
                 log_returns = self._compute_log_returns_for_hrp(
-                    ohlcv, available_tickers, current_date, cfg.lookback_days
+                    ohlcv, selected_tickers, decision_date, cfg.lookback_days
                 )
 
                 if log_returns.height >= 2:
-                    optimizer = HRPOptimizer(config=hrp_config)
+                    optimizer = HRPOptimizer(config=rebalance_hrp_config)
                     hrp_result = optimizer.optimize(
                         log_returns, confidences=confidences
                     )
-                    new_weights = hrp_result.weights
+                    raw_weights = hrp_result.weights
                 else:
                     # Fallback: equal weight
-                    new_weights = {
-                        t: 1.0 / len(available_tickers)
-                        for t in available_tickers
+                    raw_weights = {
+                        t: 1.0 / n_sel for t in selected_tickers
                     }
                     logger.warning(
                         "Insufficient data for HRP on {}; using equal weights",
                         current_date,
                     )
+
+                # -- Volatility targeting (Ex-Ante Risk of target allocation)
+                leverage = 1.0
+                if cfg.target_vol is not None and log_returns.height >= cfg.vol_lookback:
+                    # Utiliza os retornos simples já calculados para a simulação exata
+                    recent_simple_rets = returns_wide.filter(
+                        pl.col("date") <= decision_date
+                    ).tail(cfg.vol_lookback)
+                    
+                    simulated_port_rets = []
+                    for row_dict in recent_simple_rets.iter_rows(named=True):
+                        # Pondera os retornos discretos/simples
+                        day_ret = sum(row_dict.get(t, 0.0) * w for t, w in raw_weights.items())
+                        simulated_port_rets.append(day_ret)
+                    
+                    n_rets = len(simulated_port_rets)
+                    mean_ret = sum(simulated_port_rets) / n_rets
+                    var = sum((r - mean_ret) ** 2 for r in simulated_port_rets) / (n_rets - 1)
+                    ex_ante_vol = math.sqrt(var) * math.sqrt(cfg.trading_days_per_year)
+
+                    if ex_ante_vol > 0:
+                        raw_leverage = cfg.target_vol / ex_ante_vol
+                        leverage = max(
+                            cfg.min_leverage,
+                            min(cfg.max_leverage, raw_leverage),
+                        )
+                
+                # Apply leverage to raw HRP weights (sum will now equal leverage, not 1.0)
+                new_weights = {t: w * leverage for t, w in raw_weights.items()}
 
                 # Effective weights from current holdings (drift-adjusted)
                 effective_weights = {
@@ -544,6 +746,9 @@ class WalkForwardBacktester:
                         for t in available_tickers
                     }
 
+                    # Record rebalance
+                    cash = portfolio_value - sum(holdings.values())
+
                     rebalance_history.append(
                         RebalanceRecord(
                             date=current_date,
@@ -554,7 +759,6 @@ class WalkForwardBacktester:
                         )
                     )
                     rebalanced = True
-                    days_since_rebalance = 0
 
                     logger.debug(
                         "Rebalanced on {}: turnover={:.4f} cost=${:.2f}",
@@ -563,27 +767,114 @@ class WalkForwardBacktester:
                         dollar_cost,
                     )
 
-            if not rebalanced:
-                days_since_rebalance += 1
+            days_since_rebalance += 1
 
             # -- Compute daily returns (drift-adjusted holdings)
             row = returns_wide.row(row_idx, named=True)
-
-            # Update per-asset holdings with today's return
-            old_portfolio_value = portfolio_value
-            for t in available_tickers:
-                asset_ret = row.get(t, 0.0)
-                holdings[t] *= (1.0 + asset_ret)
-
-            portfolio_value = sum(holdings.values())
-            port_ret = (
-                (portfolio_value / old_portfolio_value - 1.0)
-                if old_portfolio_value > 0
-                else 0.0
-            )
-
             bench_ret = row.get(benchmark_ticker, 0.0)
             benchmark_value *= (1.0 + bench_ret)
+
+            # Daily risk-free rate for cash carry / margin cost (Geometric compounding)
+            daily_rf = (1.0 + cfg.rf) ** (1.0 / cfg.trading_days_per_year) - 1.0
+
+            if in_cash:
+                # Killswitch active: full portfolio parked in cash, earns rf
+                portfolio_value *= (1.0 + daily_rf)
+                port_ret = daily_rf
+            else:
+                # Update per-asset holdings with today's return
+                for t in available_tickers:
+                    asset_ret = row.get(t, 0.0)
+                    holdings[t] *= (1.0 + asset_ret)
+
+                # Cash carry: positive cash earns rf, negative cash
+                # (margin) costs rf + spread.
+                if cash >= 0:
+                    cash *= (1.0 + daily_rf)
+                else:
+                    annual_borrow_rate = cfg.rf + cfg.margin_spread
+                    daily_borrow = (1.0 + annual_borrow_rate) ** (1.0 / cfg.trading_days_per_year) - 1.0
+                    cash *= (1.0 + daily_borrow)
+
+                portfolio_value = sum(holdings.values()) + cash
+
+            # Safeguard de Ruína Matemática
+            if portfolio_value <= 0:
+                logger.error("BANKRUPTCY TRIGERRED no dia {}. Capital atingiu <= 0.", current_date)
+                portfolio_value = 0.0
+                port_ret = -1.0
+                equity_dates.append(current_date)
+                equity_portfolio.append(0.0)
+                equity_benchmark.append(benchmark_value)
+                returns_port.append(port_ret)
+                returns_bench.append(bench_ret)
+                break # Encerra o backtest imediatamente
+
+            # -- Drawdown killswitch (after returns are applied)
+            if cfg.killswitch is not None:
+                peak_value = max(peak_value, portfolio_value)
+                bench_peak = max(bench_peak, benchmark_value)
+                dd = (portfolio_value / peak_value) - 1.0 if peak_value > 0 else 0.0
+
+                if dd <= cfg.killswitch.max_drawdown_pct and not in_cash:
+                    # Exit: liquidate all holdings
+                    effective_weights = {
+                        t: holdings[t] / portfolio_value
+                        for t in available_tickers
+                    } if portfolio_value > 0 else {
+                        t: 0.0 for t in available_tickers
+                    }
+                    zero_weights = {t: 0.0 for t in available_tickers}
+                    _, exit_cost = self._apply_costs(
+                        effective_weights, zero_weights,
+                        portfolio_value, cfg.costs,
+                    )
+                    portfolio_value -= exit_cost
+                    holdings = {t: 0.0 for t in available_tickers}
+                    cash = portfolio_value
+                    in_cash = True
+                    days_recovering = 0
+                    logger.warning(
+                        "KILLSWITCH ON {}: DD={:.2%}, cost=${:.2f}",
+                        current_date, dd, exit_cost,
+                    )
+
+                elif in_cash:
+                    # Recovery: use benchmark drawdown as proxy
+                    bench_dd = (
+                        (benchmark_value / bench_peak) - 1.0
+                        if bench_peak > 0
+                        else 0.0
+                    )
+                    if bench_dd >= cfg.killswitch.recovery_threshold_pct:
+                        days_recovering += 1
+                        ramp = min(
+                            1.0,
+                            days_recovering / cfg.killswitch.ramp_up_days,
+                        )
+                        if ramp >= 1.0:
+                            in_cash = False
+                            # Reset peak to avoid immediate re-trigger
+                            # from stale pre-crash high-water mark
+                            peak_value = portfolio_value
+                            # Force rebalance on next iteration
+                            days_since_rebalance = cfg.rebalance_every
+                            logger.info(
+                                "KILLSWITCH OFF {}: ramp complete, "
+                                "resuming trading",
+                                current_date,
+                            )
+                    else:
+                        # Benchmark still in drawdown — reset ramp
+                        days_recovering = 0
+
+            # Use start-of-day value as base so that rebalance
+            # costs are correctly reflected in the return series.
+            port_ret = (
+                (portfolio_value / portfolio_value_start_of_day - 1.0)
+                if portfolio_value_start_of_day > 0
+                else 0.0
+            )
 
             equity_dates.append(current_date)
             equity_portfolio.append(portfolio_value)
@@ -606,6 +897,7 @@ class WalkForwardBacktester:
 
         metadata: dict[str, Any] = {
             "n_tickers": len(available_tickers),
+            "top_n": cfg.top_n,
             "benchmark_ticker": benchmark_ticker,
             "start_date": str(equity_dates[0]) if equity_dates else None,
             "end_date": str(equity_dates[-1]) if equity_dates else None,

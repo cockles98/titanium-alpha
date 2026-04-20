@@ -16,6 +16,7 @@ import pytest
 
 from src.data.news_ingestion import (
     NewsIngester,
+    _TICKER_COMPANY,
     _clean_html,
     _match_ticker,
     _parse_date,
@@ -83,8 +84,8 @@ class TestMatchTicker:
     def test_match_aapl(self) -> None:
         assert _match_ticker("Tim Cook announces new iPhone", "") == "AAPL"
 
-    def test_match_qqq(self) -> None:
-        assert _match_ticker("", "Nasdaq composite rises") == "QQQ"
+    def test_match_msft(self) -> None:
+        assert _match_ticker("Microsoft Azure revenue grows", "") == "MSFT"
 
     def test_no_match(self) -> None:
         assert _match_ticker("Weather forecast today", "Rain expected") is None
@@ -95,10 +96,29 @@ class TestMatchTicker:
     def test_case_insensitive(self) -> None:
         assert _match_ticker("nvidia stock soars", "") == "NVDA"
 
-    def test_first_match_wins(self) -> None:
-        # SPY keywords checked before NVDA in dict order
+    def test_specific_stock_matches_before_index(self) -> None:
+        # Individual stocks checked before indices, so NVDA matches
+        # before SPY even though both keywords appear.
         result = _match_ticker("S&P 500 and NVIDIA news", "")
-        assert result == "SPY"
+        assert result == "NVDA"
+
+    def test_most_evidence_wins_over_dict_order(self) -> None:
+        """Ticker with the most keyword hits should win regardless of
+        dict insertion order (reduces first-match positional bias)."""
+        # AMZN has 3 keyword hits (Amazon, AWS, Andy Jassy)
+        # AAPL has 1 keyword hit (Apple) — earlier in dict but less evidence
+        result = _match_ticker(
+            "Amazon AWS expansion led by Andy Jassy; Apple mentioned briefly",
+            "",
+        )
+        assert result == "AMZN"
+
+    def test_tiebreak_favors_dict_order(self) -> None:
+        """With equal keyword counts, the first ticker in dict order wins."""
+        # AAPL: "Apple" (1 hit), MSFT: "Microsoft" (1 hit)
+        # AAPL is earlier in dict → wins the tie
+        result = _match_ticker("Apple and Microsoft", "")
+        assert result == "AAPL"
 
 
 # ======================================================================
@@ -195,6 +215,16 @@ class TestParseDate:
 
     def test_whitespace_stripped(self) -> None:
         assert _parse_date("  2025-06-15  ") == date(2025, 6, 15)
+
+    def test_iso_fractional_seconds(self) -> None:
+        """NewsAPI often returns fractional seconds — must not be dropped."""
+        assert _parse_date("2025-06-15T10:30:00.123Z") == date(2025, 6, 15)
+
+    def test_iso_fractional_seconds_with_offset(self) -> None:
+        assert _parse_date("2025-06-15T10:30:00.456789+05:30") == date(2025, 6, 15)
+
+    def test_iso_microsecond_precision(self) -> None:
+        assert _parse_date("2025-06-15T10:30:00.123456Z") == date(2025, 6, 15)
 
 
 # ======================================================================
@@ -502,3 +532,232 @@ class TestRun:
         mock_table.assert_called_once()
         mock_save.assert_called_once()
         assert result.height == 1
+
+
+# ======================================================================
+# 12. _parse_date — GDELT compact ISO format
+# ======================================================================
+
+
+class TestParseDateGdelt:
+    """Tests for GDELT compact ISO format (20240104T184500Z)."""
+
+    def test_gdelt_compact_utc(self) -> None:
+        assert _parse_date("20240104T184500Z") == date(2024, 1, 4)
+
+    def test_gdelt_compact_no_z(self) -> None:
+        assert _parse_date("20231215T093000") == date(2023, 12, 15)
+
+    def test_gdelt_midnight(self) -> None:
+        assert _parse_date("20200601T000000Z") == date(2020, 6, 1)
+
+
+# ======================================================================
+# 13. _match_ticker — improved keywords
+# ======================================================================
+
+
+class TestMatchTickerImproved:
+    """Tests for newly added keywords."""
+
+    def test_goldman_alone_matches_gs(self) -> None:
+        assert _match_ticker("Goldman likes these stocks", "") == "GS"
+
+    def test_citi_matches_c(self) -> None:
+        assert _match_ticker("Citi reports strong Q4", "") == "C"
+
+    def test_bofa_matches_bac(self) -> None:
+        assert _match_ticker("BofA raises dividend", "") == "BAC"
+
+    def test_lilly_matches_lly(self) -> None:
+        assert _match_ticker("Lilly drug approved by FDA", "") == "LLY"
+
+    def test_pg_matches(self) -> None:
+        assert _match_ticker("P&G raises prices", "") == "PG"
+
+    def test_jnj_alias_matches(self) -> None:
+        assert _match_ticker("J&J vaccine update", "") == "JNJ"
+
+
+# ======================================================================
+# 14. _TICKER_COMPANY mapping
+# ======================================================================
+
+
+class TestTickerCompanyMapping:
+    """Ensure all tickers in config have a GDELT search name."""
+
+    def test_all_52_tickers_covered(self) -> None:
+        import json
+        from pathlib import Path
+
+        cfg_path = Path(__file__).resolve().parents[1] / "config" / "tickers.json"
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+        for t in cfg["tickers"]:
+            assert t in _TICKER_COMPANY, f"Ticker {t} missing from _TICKER_COMPANY"
+
+
+# ======================================================================
+# 15. _fetch_gdelt (mocked)
+# ======================================================================
+
+
+class TestFetchGdelt:
+    """Tests for NewsIngester._fetch_gdelt."""
+
+    @patch("src.data.news_ingestion.time.sleep")
+    @patch("src.data.news_ingestion.requests.get")
+    def test_ok_response_returns_articles(
+        self,
+        mock_get: MagicMock,
+        mock_sleep: MagicMock,
+        ingester: NewsIngester,
+    ) -> None:
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {
+            "articles": [
+                {
+                    "title": "Nvidia beats earnings",
+                    "url": "https://example.com/nvda-gdelt",
+                    "seendate": "20240115T103000Z",
+                    "domain": "reuters.com",
+                },
+            ]
+        }
+        mock_get.return_value = resp
+
+        result = ingester._fetch_gdelt("NVDA", date(2024, 1, 1), date(2024, 2, 1))
+
+        assert len(result) == 1
+        assert result[0]["ticker"] == "NVDA"
+        assert result[0]["date"] == "2024-01-15"
+        assert result[0]["source"] == "GDELT/reuters.com"
+
+    @patch("src.data.news_ingestion.time.sleep")
+    @patch("src.data.news_ingestion.requests.get")
+    def test_429_retries(
+        self,
+        mock_get: MagicMock,
+        mock_sleep: MagicMock,
+        ingester: NewsIngester,
+    ) -> None:
+        resp_429 = MagicMock()
+        resp_429.status_code = 429
+
+        resp_ok = MagicMock()
+        resp_ok.status_code = 200
+        resp_ok.raise_for_status = MagicMock()
+        resp_ok.json.return_value = {"articles": []}
+
+        mock_get.side_effect = [resp_429, resp_ok]
+
+        result = ingester._fetch_gdelt("AAPL", date(2024, 1, 1), date(2024, 2, 1))
+
+        assert result == []
+        assert mock_sleep.call_count >= 1
+
+    @patch("src.data.news_ingestion.time.sleep")
+    @patch("src.data.news_ingestion.requests.get")
+    def test_skips_articles_without_url(
+        self,
+        mock_get: MagicMock,
+        mock_sleep: MagicMock,
+        ingester: NewsIngester,
+    ) -> None:
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {
+            "articles": [
+                {"title": "No URL article", "url": "", "seendate": "20240101T000000Z", "domain": "x.com"},
+                {"title": "Good article", "url": "https://example.com/good", "seendate": "20240101T000000Z", "domain": "y.com"},
+            ]
+        }
+        mock_get.return_value = resp
+
+        result = ingester._fetch_gdelt("AAPL", date(2024, 1, 1), date(2024, 2, 1))
+        assert len(result) == 1
+        assert result[0]["url"] == "https://example.com/good"
+
+
+# ======================================================================
+# 16. backfill_historical (mocked)
+# ======================================================================
+
+
+class TestBackfillHistorical:
+    """Tests for NewsIngester.backfill_historical."""
+
+    @patch("src.data.news_ingestion.time.sleep")
+    def test_calls_fetch_per_ticker_per_chunk(
+        self,
+        mock_sleep: MagicMock,
+        ingester: NewsIngester,
+    ) -> None:
+        with patch.object(ingester, "_ensure_table"), \
+             patch.object(ingester, "_fetch_google_news", return_value=[]) as mock_fetch:
+
+            ingester.backfill_historical(
+                start_year=2023, end_year=2023, tickers=["AAPL", "MSFT"]
+            )
+
+        # 2023-01-01 → 2024-01-01 = 3 chunks × 2 tickers = 6
+        assert mock_fetch.call_count == 6
+
+    @patch("src.data.news_ingestion.time.sleep")
+    def test_inserts_fetched_articles(
+        self,
+        mock_sleep: MagicMock,
+        ingester: NewsIngester,
+    ) -> None:
+        articles = [
+            {
+                "date": "2023-06-15",
+                "ticker": "AAPL",
+                "title": "Apple WWDC",
+                "source": "GNews/Reuters",
+                "url": "https://example.com/wwdc",
+                "summary": "",
+            },
+        ]
+
+        with patch.object(ingester, "_ensure_table"), \
+             patch.object(ingester, "_fetch_google_news", return_value=articles), \
+             patch.object(ingester, "_save_to_postgres", return_value=1) as mock_save:
+
+            total = ingester.backfill_historical(
+                start_year=2023, end_year=2023, tickers=["AAPL"]
+            )
+
+        # 3 chunks × 1 article each = 3 save calls, 3 inserted
+        assert total == 3
+        assert mock_save.call_count == 3
+
+
+# ======================================================================
+# 17. rematch_null_tickers (mocked)
+# ======================================================================
+
+
+class TestRematchNullTickers:
+    """Tests for NewsIngester.rematch_null_tickers."""
+
+    def test_updates_matchable_rows(
+        self, ingester: NewsIngester, mock_engine: MagicMock
+    ) -> None:
+        conn = mock_engine.begin.return_value.__enter__.return_value
+        # Simulate 2 NULL-ticker rows: one matchable, one not
+        conn.execute.return_value.fetchall.return_value = [
+            (1, "Goldman Sachs Q4 earnings", "Strong revenue growth"),
+            (2, "Random weather article", "Rain expected tomorrow"),
+        ]
+
+        result = ingester.rematch_null_tickers()
+
+        # "Goldman Sachs" matches GS, weather article stays NULL
+        assert result == 1
+        # 1 SELECT + 1 UPDATE (only for the matched row)
+        assert conn.execute.call_count == 2

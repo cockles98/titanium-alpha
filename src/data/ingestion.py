@@ -15,7 +15,7 @@ import yfinance as yf
 from loguru import logger
 from sqlalchemy import Engine, text
 
-from src.config import load_tickers
+from src.config import load_ticker_config, load_tickers
 from src.utils.db import get_postgres_engine
 
 DEFAULT_TICKERS: list[str] = ["SPY", "NVDA", "AAPL", "QQQ"]
@@ -24,18 +24,26 @@ DEFAULT_TICKERS: list[str] = ["SPY", "NVDA", "AAPL", "QQQ"]
 def _resolve_tickers(tickers: list[str] | None = None) -> list[str]:
     """Resolve tickers from argument, config file, or hardcoded fallback.
 
+    When loading from config, the benchmark ticker (e.g. SPY) is included
+    automatically so that downstream benchmark calculations have data.
+
     Args:
         tickers: Explicit list of tickers.  If ``None``, tries to load
             from ``config/tickers.json``, falling back to
             ``DEFAULT_TICKERS``.
 
     Returns:
-        List of ticker symbols.
+        List of ticker symbols (deduplicated).
     """
     if tickers is not None:
-        return tickers
+        return list(dict.fromkeys(tickers))
     try:
-        return load_tickers()
+        config = load_ticker_config()
+        all_tickers = list(config["tickers"])
+        benchmark = config.get("benchmark")
+        if benchmark and benchmark not in all_tickers:
+            all_tickers.append(benchmark)
+        return all_tickers
     except Exception:
         return DEFAULT_TICKERS
 OHLCV_TABLE: str = "market_ohlcv"
@@ -98,6 +106,77 @@ class MarketDataIngester:
             conn.execute(text(_CREATE_TABLE_SQL))
         logger.info("Table '{}' ready", OHLCV_TABLE)
 
+    @staticmethod
+    def _validate_ohlcv(df: pl.DataFrame, ticker: str) -> pl.DataFrame:
+        """Validate OHLCV data integrity and drop corrupt rows.
+
+        Guards against upstream data issues (yfinance API glitches,
+        corporate action misapplication) that would cascade as -inf/NaN
+        through downstream ``log()`` calls in features and walk-forward.
+
+        Checks:
+            - ``close > 0`` (critical: ``log(0)`` = -inf)
+            - ``high >= low`` (impossible OHLCV invariant)
+            - ``volume >= 0``
+
+        Args:
+            df: Downloaded OHLCV DataFrame for a single ticker.
+            ticker: Ticker symbol (for log messages).
+
+        Returns:
+            Cleaned DataFrame with invalid rows removed.
+
+        Raises:
+            ValueError: If more than 5% of rows are invalid,
+                suggesting systematic data corruption.
+        """
+        n_before = df.height
+
+        # Count individual violation types for diagnostics
+        invalid_close = df.filter(
+            pl.col("close").is_null() | (pl.col("close") <= 0)
+        ).height
+        invalid_hl = df.filter(pl.col("high") < pl.col("low")).height
+        invalid_vol = df.filter(pl.col("volume") < 0).height
+
+        # Fast path: no violations detected
+        if invalid_close == 0 and invalid_hl == 0 and invalid_vol == 0:
+            return df
+
+        # Drop rows that would break downstream math
+        # (volume null is OK — propagates as null features; volume < 0 is not)
+        df_clean = df.filter(
+            pl.col("close").is_not_null()
+            & (pl.col("close") > 0)
+            & (pl.col("high") >= pl.col("low"))
+            & (pl.col("volume").is_null() | (pl.col("volume") >= 0))
+        )
+
+        # Use actual row-count delta (avoids double-counting rows
+        # that violate multiple conditions simultaneously)
+        n_dropped = n_before - df_clean.height
+
+        logger.warning(
+            "{}: dropped {} invalid rows (close<=0: {}, high<low: {}, "
+            "vol<0: {}) | {} → {} rows",
+            ticker,
+            n_dropped,
+            invalid_close,
+            invalid_hl,
+            invalid_vol,
+            n_before,
+            df_clean.height,
+        )
+
+        corruption_pct = n_dropped / n_before if n_before > 0 else 0
+        if corruption_pct > 0.05:
+            raise ValueError(
+                f"{ticker}: {corruption_pct:.1%} of rows invalid "
+                f"({n_dropped}/{n_before}) — likely systematic corruption"
+            )
+
+        return df_clean
+
     def _download_ticker(self, ticker: str) -> pl.DataFrame:
         """Download OHLCV for a single ticker with retry logic.
 
@@ -121,26 +200,30 @@ class MarketDataIngester:
                     attempt,
                     self.max_retries,
                 )
-                pdf = yf.download(
-                    ticker,
+                # Use yf.Ticker().history() instead of yf.download()
+                # to avoid thread-safety issues with yfinance's shared
+                # session/cache that cause adjacent tickers to get
+                # identical data in parallel downloads.
+                t = yf.Ticker(ticker)
+                pdf = t.history(
                     start=str(self.start_date),
                     end=str(self.end_date),
-                    auto_adjust=False,
-                    progress=False,
+                    auto_adjust=True,
                 )
 
                 if pdf.empty:
                     raise ValueError(f"yfinance returned empty DataFrame for {ticker}")
 
-                # yfinance returns MultiIndex columns: (Price, Ticker)
-                # Flatten by taking the first level
-                pdf.columns = [col[0] for col in pdf.columns]
+                # yf.Ticker.history() returns simple column names
+                # (Open, High, Low, Close, Volume, Dividends, Stock Splits)
                 pdf = pdf.reset_index()
 
                 # Convert Pandas → Polars immediately
                 df = pl.from_pandas(pdf)
 
-                # Normalize column names to our schema
+                # Normalize column names to our schema.
+                # With auto_adjust=True, OHLC are already split+dividend
+                # adjusted — no separate "Adj Close" column exists.
                 df = df.rename(
                     {
                         "Date": "date",
@@ -149,10 +232,13 @@ class MarketDataIngester:
                         "Low": "low",
                         "Close": "close",
                         "Volume": "volume",
-                        "Adj Close": "adj_close",
                     }
                 )
-                df = df.with_columns(pl.lit(ticker).alias("ticker"))
+                # adj_close = close when auto_adjust=True
+                df = df.with_columns([
+                    pl.lit(ticker).alias("ticker"),
+                    pl.col("close").alias("adj_close"),
+                ])
 
                 # Select and cast to final schema
                 df = df.select(
@@ -165,6 +251,8 @@ class MarketDataIngester:
                     pl.col("volume").cast(pl.Int64),
                     pl.col("adj_close").cast(pl.Float64),
                 )
+
+                df = self._validate_ohlcv(df, ticker)
 
                 logger.info(
                     "{} downloaded | {} rows | {} → {}",
@@ -310,7 +398,7 @@ class MarketDataIngester:
 
 
 if __name__ == "__main__":
-    ingester = MarketDataIngester()
+    ingester = MarketDataIngester(years=15)
     result = ingester.run()
     logger.info("Result shape: {} rows x {} cols", result.height, result.width)
     logger.info("Tickers: {}", result["ticker"].unique().to_list())

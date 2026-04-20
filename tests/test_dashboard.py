@@ -15,15 +15,25 @@ import pytest
 
 from src.dashboard.app import (
     AGENT_STYLES,
+    _EXPECTED_SCHEMA_VERSION,
     _METRIC_LABELS,
+    _MIN_DISPLAY_WEIGHT,
     _NODE_TO_AGENT,
+    _STRESS_FINDINGS,
+    _VALIDATED_CONFIG,
+    _chart_action_distribution,
     _chart_benchmark_drawdown,
     _chart_benchmark_equity,
+    _chart_confidence_histogram,
     _chart_quantile_fan,
     _chart_weight_comparison,
     _chart_weight_donut,
+    _detect_decision_quality,
     _format_metric_value,
+    _load_validation_results,
     _metric_color,
+    _render_concentration_metrics,
+    _render_weight_delta,
     _replay_debate,
     _run_live_debate_thread,
     load_benchmark_equity,
@@ -254,8 +264,26 @@ class TestCharts:
         assert fig.data[0].type == "pie"
 
     def test_weight_donut_empty(self) -> None:
-        fig = _chart_weight_donut({"hrp_final_weights": {}})
+        fig = _chart_weight_donut({})
         assert fig is not None
+
+    def test_weight_donut_cash_wedge(self) -> None:
+        """Donut should show 'Cash' wedge when weights sum < 1.0."""
+        weights = {"SPY": 0.3, "NVDA": 0.2}  # sum = 0.5
+        fig = _chart_weight_donut(weights)
+        labels = list(fig.data[0].labels)
+        assert "Cash" in labels
+        # Cash should be 0.5
+        cash_idx = labels.index("Cash")
+        assert abs(fig.data[0].values[cash_idx] - 0.5) < 1e-6
+
+    def test_weight_donut_filters_zero_weights(self) -> None:
+        """Donut should exclude tickers with zero weight."""
+        weights = {"SPY": 0.5, "NVDA": 0.5, "AAPL": 0.0}
+        fig = _chart_weight_donut(weights)
+        labels = list(fig.data[0].labels)
+        assert "AAPL" not in labels
+        assert "Cash" not in labels  # sum=1.0 after filtering
 
     def test_weight_comparison(self, sample_decisions: dict[str, Any]) -> None:
         fig = _chart_weight_comparison(
@@ -273,6 +301,20 @@ class TestCharts:
         # 2 bands (4 traces) + 1 median = 5
         assert len(fig.data) == 5
 
+    def test_quantile_fan_chart_with_last_close(
+        self, sample_forecast_rows: list[dict[str, Any]]
+    ) -> None:
+        fig = _chart_quantile_fan(sample_forecast_rows, "SPY", last_close=500.0)
+        assert fig is not None
+        # 2 bands (4 traces) + 1 median + 1 hline shape = 5 traces
+        # hline is added via layout.shapes, not data traces
+        assert len(fig.data) == 5
+        # Check that the hline annotation exists
+        assert any(
+            "Close" in (a.text or "")
+            for a in (fig.layout.annotations or [])
+        )
+
     def test_quantile_fan_empty(self) -> None:
         fig = _chart_quantile_fan([], "SPY")
         assert fig is not None
@@ -284,6 +326,31 @@ class TestCharts:
         assert fig is not None
         # No quantile columns → no traces
         assert len(fig.data) == 0
+
+    def test_quantile_fan_new_naming_median_above_close(self) -> None:
+        """New NF naming: median line must appear ABOVE last_close when forecast is bullish."""
+        # Median (957) is above close (955) — bullish AXP-like scenario
+        rows = [
+            {
+                "ds": f"2026-03-{7 + i:02d}",
+                "PatchTST-lo-80.0": 920.0 + i * 2,
+                "PatchTST-lo-50.0": 935.0 + i * 3,
+                "PatchTST-median": 957.0 + i * 4,
+                "PatchTST-hi-50.0": 970.0 + i * 4,
+                "PatchTST-hi-80.0": 990.0 + i * 5,
+            }
+            for i in range(5)
+        ]
+        fig = _chart_quantile_fan(rows, "AXP", last_close=955.0)
+        assert fig is not None
+        assert len(fig.data) == 5  # 4 band traces + 1 median
+
+        # The median trace (last one) must have values above 955
+        median_trace = fig.data[-1]
+        assert median_trace.name == "Median"
+        assert all(v > 955.0 for v in median_trace.y), (
+            f"Median should be above close=955 for bullish forecast, got {median_trace.y}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -628,5 +695,442 @@ class TestBenchmarkCharts:
     def test_drawdown_chart(self, sample_equity: Any) -> None:
         fig = _chart_benchmark_drawdown(sample_equity)
         assert fig is not None
-        assert len(fig.data) == 1
+        assert len(fig.data) == 2
         assert fig.data[0].fill == "tozeroy"
+        assert fig.data[0].name == "Portfolio"
+        assert fig.data[1].name.startswith("Benchmark")
+
+
+# ---------------------------------------------------------------------------
+# Session 35: Validated config & validation results
+# ---------------------------------------------------------------------------
+
+
+class TestValidatedConfig:
+    """Tests for _VALIDATED_CONFIG and _STRESS_FINDINGS constants."""
+
+    def test_config_has_required_keys(self) -> None:
+        assert "rebalance_every" in _VALIDATED_CONFIG
+        assert "target_vol" in _VALIDATED_CONFIG
+        assert "max_weight" in _VALIDATED_CONFIG
+        assert "HRP linkage" in _VALIDATED_CONFIG
+        assert "HRP shrinkage" in _VALIDATED_CONFIG
+
+    def test_config_values(self) -> None:
+        assert _VALIDATED_CONFIG["rebalance_every"] == 15
+        assert _VALIDATED_CONFIG["target_vol"] == "10% annualized (63-day lookback, 0.5-1.0 leverage)"
+        assert _VALIDATED_CONFIG["max_weight"] == "min(0.06, 2/n)"
+        assert _VALIDATED_CONFIG["lookback_days"] == 756
+
+    def test_stress_findings_not_empty(self) -> None:
+        assert len(_STRESS_FINDINGS) > 0
+        assert all(isinstance(f, str) for f in _STRESS_FINDINGS)
+
+
+class TestLoadValidationResults:
+    """Tests for _load_validation_results."""
+
+    def test_returns_none_when_missing(self, tmp_path: Path) -> None:
+        with patch("src.dashboard.app.DATA_DIR", tmp_path):
+            result = _load_validation_results()
+        assert result is None
+
+    def test_loads_valid_json(self, tmp_path: Path) -> None:
+        data = {
+            "generated_at": "2026-03-13T12:00:00",
+            "configs": {
+                "baseline": {"mean_sharpe": 0.5, "accepted": True},
+            },
+        }
+        path = tmp_path / "validation_results.json"
+        with open(path, "w") as f:
+            json.dump(data, f)
+        with patch("src.dashboard.app.DATA_DIR", tmp_path):
+            result = _load_validation_results()
+        assert result is not None
+        assert "configs" in result
+        assert "baseline" in result["configs"]
+
+    def test_returns_none_on_corrupt_json(self, tmp_path: Path) -> None:
+        path = tmp_path / "validation_results.json"
+        path.write_text("not valid json{{{")
+        with patch("src.dashboard.app.DATA_DIR", tmp_path):
+            result = _load_validation_results()
+        assert result is None
+
+
+class TestDecisionQuality:
+    """Tests for _detect_decision_quality."""
+
+    def test_empty_decisions(self) -> None:
+        warnings = _detect_decision_quality({"decisions": []})
+        assert any("No decisions" in w for w in warnings)
+
+    def test_stale_timestamp(self) -> None:
+        from datetime import datetime, timezone
+
+        old_ts = (
+            datetime.now(timezone.utc).replace(microsecond=0)
+            - timedelta(days=3)
+        ).isoformat()
+        data = {
+            "timestamp": old_ts,
+            "decisions": [
+                {"action": "BUY", "confidence": 0.7},
+                {"action": "SELL", "confidence": 0.3},
+            ],
+            "metadata": {"confidence_source": "debate", "schema_version": "1.2"},
+        }
+        warnings = _detect_decision_quality(data)
+        assert any("old" in w for w in warnings)
+
+    def test_all_same_action(self) -> None:
+        from datetime import datetime, timezone
+
+        data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "decisions": [
+                {"action": "BUY", "confidence": 0.6},
+                {"action": "BUY", "confidence": 0.8},
+            ],
+            "metadata": {"confidence_source": "debate", "schema_version": "1.2"},
+        }
+        warnings = _detect_decision_quality(data)
+        assert any("BUY" in w and "no differentiation" in w for w in warnings)
+
+    def test_all_same_confidence(self) -> None:
+        from datetime import datetime, timezone
+
+        data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "decisions": [
+                {"action": "BUY", "confidence": 0.5},
+                {"action": "HOLD", "confidence": 0.5},
+            ],
+            "metadata": {"confidence_source": "none", "schema_version": "1.2"},
+        }
+        warnings = _detect_decision_quality(data)
+        assert any("identical" in w for w in warnings)
+
+    def test_no_confidence_source(self) -> None:
+        from datetime import datetime, timezone
+
+        data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "decisions": [
+                {"action": "BUY", "confidence": 0.6},
+                {"action": "SELL", "confidence": 0.3},
+            ],
+            "metadata": {"confidence_source": "none", "schema_version": "1.2"},
+        }
+        warnings = _detect_decision_quality(data)
+        assert any("none" in w.lower() for w in warnings)
+
+    def test_old_schema(self) -> None:
+        from datetime import datetime, timezone
+
+        data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "decisions": [
+                {"action": "BUY", "confidence": 0.7},
+                {"action": "SELL", "confidence": 0.2},
+            ],
+            "metadata": {"confidence_source": "debate", "schema_version": "1.0"},
+        }
+        warnings = _detect_decision_quality(data)
+        assert any("schema" in w.lower() for w in warnings)
+
+    def test_current_schema_no_warning(self) -> None:
+        from datetime import datetime, timezone
+
+        data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "decisions": [
+                {"action": "BUY", "confidence": 0.7},
+                {"action": "SELL", "confidence": 0.2},
+            ],
+            "metadata": {
+                "confidence_source": "debate",
+                "schema_version": _EXPECTED_SCHEMA_VERSION,
+            },
+        }
+        warnings = _detect_decision_quality(data)
+        assert not any("schema" in w.lower() for w in warnings)
+
+    def test_shrinkage_missing_warns(self) -> None:
+        from datetime import datetime, timezone
+
+        data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "decisions": [
+                {"action": "BUY", "confidence": 0.7},
+                {"action": "SELL", "confidence": 0.3},
+            ],
+            "metadata": {
+                "confidence_source": "debate",
+                "schema_version": "1.2",
+                "hrp_config": {"linkage_method": "ward"},
+            },
+        }
+        warnings = _detect_decision_quality(data)
+        assert any("shrinkage" in w.lower() for w in warnings)
+
+    def test_shrinkage_false_warns(self) -> None:
+        from datetime import datetime, timezone
+
+        data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "decisions": [
+                {"action": "BUY", "confidence": 0.7},
+                {"action": "SELL", "confidence": 0.3},
+            ],
+            "metadata": {
+                "confidence_source": "debate",
+                "schema_version": "1.2",
+                "hrp_config": {"linkage_method": "ward", "shrinkage": False},
+            },
+        }
+        warnings = _detect_decision_quality(data)
+        assert any("shrinkage" in w.lower() for w in warnings)
+
+    def test_healthy_decisions_no_warnings(self) -> None:
+        from datetime import datetime, timezone
+
+        data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "decisions": [
+                {"action": "BUY", "confidence": 0.8},
+                {"action": "HOLD", "confidence": 0.5},
+                {"action": "SELL", "confidence": 0.2},
+            ],
+            "metadata": {"confidence_source": "debate", "schema_version": "1.2"},
+        }
+        warnings = _detect_decision_quality(data)
+        assert len(warnings) == 0
+
+
+# ---------------------------------------------------------------------------
+# TestConfidenceHistogram
+# ---------------------------------------------------------------------------
+
+
+class TestConfidenceHistogram:
+    def test_returns_figure(self, sample_decisions: dict[str, Any]) -> None:
+        fig = _chart_confidence_histogram(sample_decisions)
+        assert fig is not None
+        # BUY and HOLD actions in sample → at least 2 traces
+        assert len(fig.data) >= 2
+
+    def test_all_actions_present(self) -> None:
+        data = {
+            "decisions": [
+                {"action": "BUY", "confidence": 0.8},
+                {"action": "HOLD", "confidence": 0.5},
+                {"action": "SELL", "confidence": 0.2},
+            ],
+        }
+        fig = _chart_confidence_histogram(data)
+        assert fig is not None
+        assert len(fig.data) == 3  # one trace per action
+        names = {t.name for t in fig.data}
+        assert names == {"BUY", "HOLD", "SELL"}
+
+    def test_returns_none_for_empty(self) -> None:
+        assert _chart_confidence_histogram({"decisions": []}) is None
+
+    def test_returns_none_for_missing_key(self) -> None:
+        assert _chart_confidence_histogram({}) is None
+
+    def test_single_action(self) -> None:
+        data = {
+            "decisions": [
+                {"action": "BUY", "confidence": 0.9},
+                {"action": "BUY", "confidence": 0.7},
+            ],
+        }
+        fig = _chart_confidence_histogram(data)
+        assert fig is not None
+        assert len(fig.data) == 1
+        assert fig.data[0].name == "BUY"
+
+
+# ---------------------------------------------------------------------------
+# TestConcentrationMetrics
+# ---------------------------------------------------------------------------
+
+
+class TestConcentrationMetrics:
+    def test_renders_with_valid_weights(self) -> None:
+        weights = {"SPY": 0.35, "NVDA": 0.30, "AAPL": 0.20, "QQQ": 0.15}
+        with patch("src.dashboard.app.st") as mock_st:
+            mock_cols = [MagicMock() for _ in range(4)]
+            mock_st.columns.return_value = mock_cols
+            _render_concentration_metrics(weights)
+        mock_st.columns.assert_called_once_with(4)
+        # Check Active Positions = 4
+        mock_cols[0].metric.assert_called_once()
+        assert mock_cols[0].metric.call_args[0] == ("Active Positions", 4)
+
+    def test_skips_empty_weights(self) -> None:
+        with patch("src.dashboard.app.st") as mock_st:
+            _render_concentration_metrics({})
+        mock_st.columns.assert_not_called()
+
+    def test_skips_zero_weights(self) -> None:
+        with patch("src.dashboard.app.st") as mock_st:
+            _render_concentration_metrics({"SPY": 0.0, "NVDA": 0.0})
+        mock_st.columns.assert_not_called()
+
+    def test_effective_n_equal_weight(self) -> None:
+        """Equal-weight portfolio should have Effective N = n_assets."""
+        weights = {f"T{i}": 0.1 for i in range(10)}
+        with patch("src.dashboard.app.st") as mock_st:
+            mock_cols = [MagicMock() for _ in range(4)]
+            mock_st.columns.return_value = mock_cols
+            _render_concentration_metrics(weights)
+        # Effective N should be 10.0 for equal weight
+        eff_n_call = mock_cols[1].metric.call_args
+        assert eff_n_call[0] == ("Effective N", "10.0")
+
+    def test_max_position_identifies_largest(self) -> None:
+        weights = {"SPY": 0.50, "NVDA": 0.30, "AAPL": 0.20}
+        with patch("src.dashboard.app.st") as mock_st:
+            mock_cols = [MagicMock() for _ in range(4)]
+            mock_st.columns.return_value = mock_cols
+            _render_concentration_metrics(weights)
+        max_call = mock_cols[3].metric.call_args
+        assert "SPY" in max_call[0][0]
+        assert max_call[0][1] == "50.00%"
+
+
+# ---------------------------------------------------------------------------
+# TestWeightDelta
+# ---------------------------------------------------------------------------
+
+
+class TestWeightDelta:
+    def test_renders_deltas(self) -> None:
+        import polars as pl
+
+        current = {"SPY": 0.40, "NVDA": 0.30, "AAPL": 0.30}
+        bench_df = pl.DataFrame({
+            "date": [date(2025, 1, 2)] * 3,
+            "ticker": ["SPY", "NVDA", "MSFT"],
+            "weight": [0.35, 0.35, 0.30],
+        })
+        with patch("src.dashboard.app.st") as mock_st:
+            mock_cols = [MagicMock() for _ in range(3)]
+            mock_st.columns.return_value = mock_cols
+            _render_weight_delta(current, bench_df)
+        # AAPL entered (new), MSFT exited
+        mock_cols[0].metric.assert_called_with("New Positions", 1)
+        mock_cols[1].metric.assert_called_with("Exited", 1)
+
+    def test_no_changes(self) -> None:
+        import polars as pl
+
+        current = {"SPY": 0.50, "NVDA": 0.50}
+        bench_df = pl.DataFrame({
+            "date": [date(2025, 1, 2)] * 2,
+            "ticker": ["SPY", "NVDA"],
+            "weight": [0.50, 0.50],
+        })
+        with patch("src.dashboard.app.st") as mock_st:
+            _render_weight_delta(current, bench_df)
+        mock_st.info.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TestActionDistribution
+# ---------------------------------------------------------------------------
+
+
+class TestActionDistribution:
+    def test_returns_figure(self, sample_decisions: dict[str, Any]) -> None:
+        fig = _chart_action_distribution(sample_decisions)
+        assert fig is not None
+        assert fig.data[0].type == "pie"
+
+    def test_all_actions(self) -> None:
+        data = {
+            "decisions": [
+                {"action": "BUY", "confidence": 0.8},
+                {"action": "HOLD", "confidence": 0.5},
+                {"action": "SELL", "confidence": 0.2},
+            ],
+        }
+        fig = _chart_action_distribution(data)
+        assert fig is not None
+        labels = list(fig.data[0].labels)
+        assert set(labels) == {"BUY", "HOLD", "SELL"}
+        values = list(fig.data[0].values)
+        assert values == [1, 1, 1]
+
+    def test_returns_none_for_empty(self) -> None:
+        assert _chart_action_distribution({"decisions": []}) is None
+
+    def test_returns_none_for_no_key(self) -> None:
+        assert _chart_action_distribution({}) is None
+
+    def test_skips_zero_count_actions(self) -> None:
+        data = {
+            "decisions": [
+                {"action": "BUY", "confidence": 0.8},
+                {"action": "BUY", "confidence": 0.7},
+            ],
+        }
+        fig = _chart_action_distribution(data)
+        labels = list(fig.data[0].labels)
+        assert "SELL" not in labels
+        assert "HOLD" not in labels
+
+
+# ---------------------------------------------------------------------------
+# TestConcentrationWarnings
+# ---------------------------------------------------------------------------
+
+
+class TestConcentrationWarnings:
+    def test_warns_on_high_concentration(self) -> None:
+        """With 10 equal-weight assets, one at 30% should trigger warning."""
+        weights = {f"T{i}": 0.0778 for i in range(9)}
+        weights["BIG"] = 0.30
+        with patch("src.dashboard.app.st") as mock_st:
+            mock_cols = [MagicMock() for _ in range(4)]
+            mock_st.columns.return_value = mock_cols
+            _render_concentration_metrics(weights)
+        # Should warn: BIG exceeds 2x equal weight (2/10 = 20%)
+        mock_st.warning.assert_called()
+
+    def test_no_warning_for_equal_weight(self) -> None:
+        weights = {f"T{i}": 0.05 for i in range(20)}
+        with patch("src.dashboard.app.st") as mock_st:
+            mock_cols = [MagicMock() for _ in range(4)]
+            mock_st.columns.return_value = mock_cols
+            _render_concentration_metrics(weights)
+        mock_st.warning.assert_not_called()
+
+    def test_top5_concentration_warning(self) -> None:
+        """Top-5 at 60% with 10+ assets should trigger warning."""
+        weights = {f"T{i}": 0.12 for i in range(5)}
+        weights.update({f"S{i}": 0.04 for i in range(10)})
+        with patch("src.dashboard.app.st") as mock_st:
+            mock_cols = [MagicMock() for _ in range(4)]
+            mock_st.columns.return_value = mock_cols
+            _render_concentration_metrics(weights)
+        calls = [str(c) for c in mock_st.warning.call_args_list]
+        assert any("Top-5" in c for c in calls)
+
+
+# ---------------------------------------------------------------------------
+# TestConstants
+# ---------------------------------------------------------------------------
+
+
+class TestConstants:
+    def test_min_display_weight_positive(self) -> None:
+        assert _MIN_DISPLAY_WEIGHT > 0
+        assert _MIN_DISPLAY_WEIGHT < 1e-4
+
+    def test_expected_schema_version(self) -> None:
+        assert _EXPECTED_SCHEMA_VERSION == "1.2"

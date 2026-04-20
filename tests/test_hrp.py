@@ -89,6 +89,7 @@ class TestHRPConfig:
         config = HRPConfig()
         assert config.linkage_method == "single"
         assert config.correlation_method == "pearson"
+        assert config.shrinkage is False
         assert config.confidence_tilt_cap == 0.20
         assert config.min_weight == 0.0
         assert config.max_weight == 0.25
@@ -625,9 +626,7 @@ class TestOptimize:
         result = opt.optimize(four_asset_returns)
         assert sum(result.weights.values()) == pytest.approx(1.0)
 
-    def test_high_vol_asset_gets_less_weight(
-        self, default_optimizer: HRPOptimizer
-    ) -> None:
+    def test_high_vol_asset_gets_less_weight(self) -> None:
         """Asset with higher variance should get lower weight (HRP property)."""
         np.random.seed(55)
         n = 200
@@ -635,7 +634,9 @@ class TestOptimize:
             "LOW_VOL": (np.random.randn(n) * 0.005).tolist(),
             "HIGH_VOL": (np.random.randn(n) * 0.05).tolist(),
         })
-        result = default_optimizer.optimize(df)
+        # max_weight must be > 1/n for the HRP signal to survive constraints
+        opt = HRPOptimizer(HRPConfig(max_weight=0.90))
+        result = opt.optimize(df)
         assert result.weights["LOW_VOL"] > result.weights["HIGH_VOL"]
 
     def test_confidence_boost_increases_weight(
@@ -724,3 +725,195 @@ class TestEdgeCases:
         }
         json_str = json.dumps(data)
         assert len(json_str) > 0
+
+
+# ---------------------------------------------------------------------------
+# Ledoit-Wolf shrinkage tests
+# ---------------------------------------------------------------------------
+
+
+class TestLedoitWolfShrinkage:
+    """Tests for Ledoit-Wolf shrinkage covariance estimator."""
+
+    def test_shrinkage_produces_valid_cov(
+        self, four_asset_returns: pl.DataFrame
+    ) -> None:
+        """Shrinkage covariance must be symmetric positive semi-definite."""
+        opt = HRPOptimizer(HRPConfig(shrinkage=True, max_weight=1.0))
+        cov, corr = opt._compute_covariance(four_asset_returns)
+        # Symmetric
+        np.testing.assert_array_almost_equal(cov, cov.T)
+        # Positive semi-definite (all eigenvalues >= 0)
+        eigenvalues = np.linalg.eigvalsh(cov)
+        assert np.all(eigenvalues >= -1e-10)
+
+    def test_shrinkage_corr_diagonal_ones(
+        self, four_asset_returns: pl.DataFrame
+    ) -> None:
+        """Correlation diagonal must be 1.0 even with shrinkage."""
+        opt = HRPOptimizer(HRPConfig(shrinkage=True, max_weight=1.0))
+        _, corr = opt._compute_covariance(four_asset_returns)
+        np.testing.assert_array_almost_equal(np.diag(corr), np.ones(4))
+
+    def test_shrinkage_corr_bounded(
+        self, four_asset_returns: pl.DataFrame
+    ) -> None:
+        """Correlation values must be in [-1, 1] with shrinkage."""
+        opt = HRPOptimizer(HRPConfig(shrinkage=True, max_weight=1.0))
+        _, corr = opt._compute_covariance(four_asset_returns)
+        assert np.all(corr >= -1.0 - 1e-10)
+        assert np.all(corr <= 1.0 + 1e-10)
+
+    def test_shrinkage_weights_sum_to_one(
+        self, four_asset_returns: pl.DataFrame
+    ) -> None:
+        """Full pipeline with shrinkage must produce valid weights."""
+        opt = HRPOptimizer(HRPConfig(shrinkage=True, max_weight=1.0))
+        result = opt.optimize(four_asset_returns)
+        assert sum(result.weights.values()) == pytest.approx(1.0)
+        assert all(w >= 0 for w in result.weights.values())
+
+    def test_shrinkage_all_tickers_present(
+        self, four_asset_returns: pl.DataFrame
+    ) -> None:
+        """Shrinkage result must include all tickers."""
+        opt = HRPOptimizer(HRPConfig(shrinkage=True))
+        result = opt.optimize(four_asset_returns)
+        assert set(result.weights.keys()) == {"SPY", "NVDA", "AAPL", "QQQ"}
+
+    def test_shrinkage_false_backward_compat(
+        self, four_asset_returns: pl.DataFrame
+    ) -> None:
+        """shrinkage=False must produce identical results to default."""
+        opt_default = HRPOptimizer(HRPConfig(max_weight=1.0))
+        opt_no_shrink = HRPOptimizer(
+            HRPConfig(shrinkage=False, max_weight=1.0)
+        )
+        r1 = opt_default.optimize(four_asset_returns)
+        r2 = opt_no_shrink.optimize(four_asset_returns)
+        for ticker in r1.weights:
+            assert r1.weights[ticker] == pytest.approx(r2.weights[ticker])
+
+    def test_shrinkage_convergence_large_sample(self) -> None:
+        """With n_obs >> n_assets, shrinkage and sample cov should converge."""
+        np.random.seed(42)
+        n = 2000  # large sample
+        data = {
+            "A": np.random.randn(n).tolist(),
+            "B": np.random.randn(n).tolist(),
+        }
+        df = pl.DataFrame(data)
+        opt_sample = HRPOptimizer(HRPConfig(max_weight=1.0))
+        opt_shrink = HRPOptimizer(
+            HRPConfig(shrinkage=True, max_weight=1.0)
+        )
+        r_sample = opt_sample.optimize(df)
+        r_shrink = opt_shrink.optimize(df)
+        # With large sample, weights should be close (within 5%)
+        for ticker in r_sample.weights:
+            assert r_sample.weights[ticker] == pytest.approx(
+                r_shrink.weights[ticker], abs=0.05
+            )
+
+    def test_shrinkage_with_confidences(
+        self, four_asset_returns: pl.DataFrame
+    ) -> None:
+        """Shrinkage + confidence tilt must produce valid weights."""
+        opt = HRPOptimizer(HRPConfig(shrinkage=True))
+        confidences = {"SPY": 0.9, "NVDA": 0.3, "AAPL": 0.7, "QQQ": 0.5}
+        result = opt.optimize(four_asset_returns, confidences)
+        assert sum(result.weights.values()) == pytest.approx(1.0)
+        assert result.weights != result.raw_weights
+
+    def test_shrinkage_deterministic(
+        self, four_asset_returns: pl.DataFrame
+    ) -> None:
+        """Shrinkage must be deterministic."""
+        opt = HRPOptimizer(HRPConfig(shrinkage=True, max_weight=1.0))
+        r1 = opt.optimize(four_asset_returns)
+        r2 = opt.optimize(four_asset_returns)
+        for ticker in r1.weights:
+            assert r1.weights[ticker] == pytest.approx(r2.weights[ticker])
+
+    def test_shrinkage_with_spearman(
+        self, four_asset_returns: pl.DataFrame
+    ) -> None:
+        """Shrinkage cov + Spearman correlation must work."""
+        opt = HRPOptimizer(HRPConfig(
+            shrinkage=True,
+            correlation_method="spearman",
+            max_weight=1.0,
+        ))
+        result = opt.optimize(four_asset_returns)
+        assert sum(result.weights.values()) == pytest.approx(1.0)
+
+    def test_shrinkage_few_obs_many_assets(self) -> None:
+        """Shrinkage must work when n_obs is close to n_assets (p ~ n)."""
+        np.random.seed(42)
+        n_obs = 10
+        n_assets = 8
+        data = {
+            f"A{i}": np.random.randn(n_obs).tolist()
+            for i in range(n_assets)
+        }
+        df = pl.DataFrame(data)
+        opt = HRPOptimizer(HRPConfig(shrinkage=True, max_weight=1.0))
+        result = opt.optimize(df)
+        assert sum(result.weights.values()) == pytest.approx(1.0)
+        assert all(w >= 0 for w in result.weights.values())
+        assert len(result.weights) == n_assets
+
+
+# ---------------------------------------------------------------------------
+# Ward linkage tests
+# ---------------------------------------------------------------------------
+
+
+class TestWardLinkage:
+    """Tests for ward linkage producing more balanced clusters."""
+
+    def test_ward_more_balanced_than_single(self) -> None:
+        """Ward linkage should produce less dispersed weights than single.
+
+        With many assets and a chaining-prone correlation structure,
+        single linkage tends to isolate individual assets while ward
+        creates more balanced clusters.
+        """
+        np.random.seed(42)
+        n = 250
+        n_assets = 20
+        # Create block-diagonal structure (groups of correlated assets)
+        data = {}
+        for group in range(4):
+            base = np.random.randn(n)
+            for i in range(5):
+                ticker = f"ASSET_{group * 5 + i}"
+                noise = np.random.randn(n) * 0.3
+                data[ticker] = (base + noise).tolist()
+        df = pl.DataFrame(data)
+
+        opt_single = HRPOptimizer(HRPConfig(
+            linkage_method="single", max_weight=1.0,
+        ))
+        opt_ward = HRPOptimizer(HRPConfig(
+            linkage_method="ward", max_weight=1.0,
+        ))
+        r_single = opt_single.optimize(df)
+        r_ward = opt_ward.optimize(df)
+
+        # Measure dispersion via std of weights
+        w_single = np.array(list(r_single.weights.values()))
+        w_ward = np.array(list(r_ward.weights.values()))
+        assert w_ward.std() < w_single.std()
+
+    def test_ward_produces_valid_linkage(
+        self, four_asset_returns: pl.DataFrame
+    ) -> None:
+        """Ward linkage matrix must have correct shape and valid entries."""
+        opt = HRPOptimizer(HRPConfig(linkage_method="ward"))
+        result = opt.optimize(four_asset_returns)
+        assert len(result.linkage_matrix) == 3  # n-1 for 4 assets
+        for row in result.linkage_matrix:
+            assert len(row) == 4
+            assert row[2] >= 0  # distance >= 0
+            assert row[3] >= 2  # cluster size >= 2

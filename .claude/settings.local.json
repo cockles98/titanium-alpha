@@ -12,7 +12,22 @@
       "Bash(ls:*)",
       "WebSearch",
       "WebFetch(domain:realpython.com)",
-      "WebFetch(domain:www.marktechpost.com)"
+      "WebFetch(domain:www.marktechpost.com)",
+      "Bash(PYTHONIOENCODING=utf-8 poetry run python -m src.data.ingestion)",
+      "Bash(echo \"EXIT_OHLCV=$?\")",
+      "Bash(PYTHONIOENCODING=utf-8 poetry run python -m src.data.news_ingestion)",
+      "Bash(echo \"EXIT_NEWS=$?\")",
+      "Bash(awk -F= '{print length\\($2\\)\" chars\"}')",
+      "Bash(PYTHONIOENCODING=utf-8 poetry run python)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(grep -E --line-buffered \"Backfilling|Backfill complete|complete\\\\\\\\.|Inserted [0-9]+ new articles|Traceback|Error|FAILED|assert|Killed|OOM|WARNING.*429|Rate limit|ERROR\")",
+      "Bash(PYTHONIOENCODING=utf-8 poetry run pytest tests/data/ -x -q)",
+      "Bash(PYTHONIOENCODING=utf-8 poetry run pytest tests/test_ingestion.py -x -q)",
+      "Bash(TRANSFORMERS_VERBOSITY=error HF_HUB_DISABLE_PROGRESS_BARS=1 TQDM_DISABLE=1 PYTHONIOENCODING=utf-8 poetry run python -c \"from src.agents.rag import FinancialRAG; rag = FinancialRAG\\(\\); n = rag.embed_pending_news\\(\\); print\\(f'Embedded {n} articles into ChromaDB'\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 poetry run python -c \"print\\('hello world'\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 poetry run python -c \"import polars as pl; print\\('polars ok'\\); df = pl.read_parquet\\('data/outputs/predictions.parquet'\\); print\\('rows=', df.shape[0], 'cols=', df.shape[1]\\); print\\('cols:', df.columns\\)\")",
+      "Bash(tee /tmp/validation.txt)",
+      "Bash(echo \"---EXIT $?---\")"
     ]
   },
   "outputStyle": "default"

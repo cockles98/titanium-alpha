@@ -53,10 +53,14 @@ class HRPConfig:
             ``"ward"`` creates more balanced clusters.
         correlation_method: ``"pearson"`` (default, consistent with HRP
             literature) or ``"spearman"`` (more robust to outliers).
+        shrinkage: When ``True``, use Ledoit-Wolf shrinkage estimator
+            instead of sample covariance.  Produces more stable weights
+            and lower turnover, especially when ``n_obs`` is close to
+            ``n_assets``.
         confidence_tilt_cap: Maximum adjustment factor applied to raw
-            HRP weights based on agent confidence.  A cap of 0.20 means
-            weights are scaled by at most ±10% (at confidence extremes
-            0.0 and 1.0).
+            HRP weights based on agent confidence. The maximum tilt 
+            depends on the spread of confidences around their 
+            cross-sectional mean.
         min_weight: Floor per asset after tilt (before renormalisation).
         max_weight: Cap per asset after tilt (before renormalisation).
             Aligned with ``MAX_SINGLE_WEIGHT = 0.25`` from the agent
@@ -65,9 +69,11 @@ class HRPConfig:
 
     linkage_method: str = "single"
     correlation_method: str = "pearson"
+    shrinkage: bool = False
     confidence_tilt_cap: float = 0.20
     min_weight: float = 0.0
     max_weight: float = 0.25
+    turnover_threshold: float = 0.02  # Só rebalanceia o ativo se a mudança for > 2%
 
 
 # ---------------------------------------------------------------------------
@@ -146,10 +152,11 @@ class HRPOptimizer:
             )
 
         logger.info(
-            "HRPOptimizer: linkage={}, correlation={}, tilt_cap={}, "
-            "max_weight={}",
+            "HRPOptimizer: linkage={}, correlation={}, shrinkage={}, "
+            "tilt_cap={}, max_weight={}",
             self.config.linkage_method,
             self.config.correlation_method,
+            self.config.shrinkage,
             self.config.confidence_tilt_cap,
             self.config.max_weight,
         )
@@ -163,6 +170,12 @@ class HRPOptimizer:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Compute covariance and correlation matrices from returns.
 
+        When ``config.shrinkage`` is ``True``, uses the Ledoit-Wolf
+        shrinkage estimator (``sklearn.covariance.LedoitWolf``) instead
+        of the sample covariance.  This produces a better-conditioned
+        covariance matrix, especially when the number of observations is
+        close to the number of assets.
+
         Args:
             returns: DataFrame where each column is a ticker's return
                 series.
@@ -172,7 +185,18 @@ class HRPOptimizer:
         """
         arr = returns.to_numpy()
 
-        cov = np.cov(arr, rowvar=False, ddof=1)
+        if self.config.shrinkage:
+            from sklearn.covariance import LedoitWolf
+
+            lw = LedoitWolf().fit(arr)
+            cov = lw.covariance_
+            logger.info(
+                "Ledoit-Wolf shrinkage applied (shrinkage_={:.4f})",
+                lw.shrinkage_,
+            )
+        else:
+            cov = np.cov(arr, rowvar=False, ddof=1)
+
         # Ensure 2-D for single-asset edge case
         cov = np.atleast_2d(cov)
 
@@ -295,7 +319,7 @@ class HRPOptimizer:
         sub_cov = cov[np.ix_(indices, indices)]
         diag = np.diag(sub_cov)
         # Inverse-variance weights within cluster
-        inv_diag = 1.0 / np.where(diag > 0, diag, 1e-10)
+        inv_diag = 1.0 / np.where(diag > 0, diag, 1e-6)
         w = inv_diag / inv_diag.sum()
         return float(w @ sub_cov @ w)
 
@@ -354,36 +378,6 @@ class HRPOptimizer:
         return weights
 
     # ------------------------------------------------------------------
-    # Clipping + normalisation
-    # ------------------------------------------------------------------
-
-    def _clip_and_normalise(
-        self, weights: dict[str, float]
-    ) -> dict[str, float]:
-        """Clip weights to ``[min_weight, max_weight]`` and renormalise.
-
-        Args:
-            weights: Unnormalised or pre-tilt weights.
-
-        Returns:
-            Clipped and normalised weights summing to 1.0.
-        """
-        clipped: dict[str, float] = {}
-        for ticker, w in weights.items():
-            clipped[ticker] = max(
-                self.config.min_weight,
-                min(self.config.max_weight, w),
-            )
-
-        total = sum(clipped.values())
-        if total > 0:
-            return {k: v / total for k, v in clipped.items()}
-
-        # Fallback: equal weight
-        n = len(clipped)
-        return {k: 1.0 / n for k in clipped}
-
-    # ------------------------------------------------------------------
     # Confidence tilt
     # ------------------------------------------------------------------
 
@@ -392,29 +386,136 @@ class HRPOptimizer:
         weights: dict[str, float],
         confidences: dict[str, float],
     ) -> dict[str, float]:
-        """Adjust HRP weights by agent confidence scores.
+        """Ajusta os pesos do HRP baseado na confiança transversal do agente.
 
-        Each weight is multiplied by ``(1 + cap * (confidence - 0.5))``,
-        then clipped to ``[min_weight, max_weight]`` and renormalised
-        to sum to 1.0.
-
-        Args:
-            weights: Raw HRP weights ``{ticker: weight}``.
-            confidences: Agent confidence ``{ticker: float}`` in [0, 1].
-
-        Returns:
-            Tilted and normalised weights.
+        Usa a média ponderada pelos pesos como ponto neutro, garantindo que
+        sum(tilted) == sum(weights) exatamente (sum-preserving tilt).
         """
         cap = self.config.confidence_tilt_cap
         tilted: dict[str, float] = {}
 
-        for ticker, w in weights.items():
-            conf = confidences.get(ticker, 0.5)  # neutral if missing
-            conf = max(0.0, min(1.0, conf))  # clamp to [0, 1]
-            multiplier = 1.0 + cap * (conf - 0.5)
-            tilted[ticker] = w * multiplier
+        # 1. Resolver confiança por ativo (clamp [0,1], default 0.5 = neutro)
+        resolved: dict[str, float] = {}
+        for ticker in weights:
+            raw = confidences.get(ticker, 0.5)
+            resolved[ticker] = max(0.0, min(1.0, raw))
 
-        return self._clip_and_normalise(tilted)
+        # 2. Média ponderada pelos pesos (ponto neutro sum-preserving)
+        #    sum(w_i * (1 + cap*(c_i - wmean))) = sum(w_i) exatamente
+        #    quando wmean = sum(w_i * c_i) / sum(w_i).
+        w_sum = sum(weights.values())
+        if w_sum > 1e-10:
+            wmean_conf = sum(
+                weights[t] * resolved[t] for t in weights
+            ) / w_sum
+        else:
+            wmean_conf = 0.5
+
+        # 3. Aplicar o multiplicador centrado na média ponderada
+        for ticker, w in weights.items():
+            multiplier = 1.0 + cap * (resolved[ticker] - wmean_conf)
+            tilted[ticker] = w * max(0.0, multiplier)
+
+        return tilted
+
+    # ------------------------------------------------------------------
+    # Constraints & normalise
+    # ------------------------------------------------------------------
+
+    def _apply_constraints_and_normalise(
+        self, 
+        target_weights: dict[str, float],
+        previous_weights: dict[str, float] | None = None
+    ) -> dict[str, float]:
+        """
+        Otimizador unificado via Waterfilling com limites dinâmicos.
+        Garante soma = 1.0, respeita min/max_weight globais e aplica 
+        latching (inércia) travando os limites de ativos que não romperam o threshold.
+        """
+        tickers = list(target_weights.keys())
+        n_assets = len(tickers)
+
+        # Guard: max_weight deve ser >= 1/n para o problema ser feasível
+        effective_max = max(self.config.max_weight, 1.0 / n_assets)
+
+        # 1. Definição dos Limites Dinâmicos (Dynamic Bounds)
+        bounds: dict[str, tuple[float, float]] = {}
+        tau = getattr(self.config, 'turnover_threshold', 0.0)
+
+        for t in tickers:
+            w_target = target_weights[t]
+            w_prev = previous_weights.get(t) if previous_weights else None
+
+            # Se a mudança modular estiver dentro do threshold, trava o ativo no peso anterior
+            if w_prev is not None and abs(w_target - w_prev) < tau:
+                bounds[t] = (w_prev, w_prev)
+            else:
+                bounds[t] = (self.config.min_weight, effective_max)
+
+        # 2. Normalização inicial (Baseline)
+        total_raw = sum(target_weights.values())
+        if total_raw <= 0:
+            return {t: 1.0 / n_assets for t in tickers}
+
+        w = {t: val / total_raw for t, val in target_weights.items()}
+
+        # 3. Loop de redistribuição iterativa (Waterfilling com limites individuais)
+        #    Runs until all weights are within bounds and sum to 1.0.
+        #    The final normalization is folded INTO the loop to avoid
+        #    the classic bug where post-loop renorm pushes capped weights
+        #    above max_weight.
+        max_iterations = 100
+        for iteration in range(max_iterations):
+            out_of_bounds = False
+            total_excess = 0.0
+            free_weight_sum = 0.0
+            free_assets = []
+
+            for t, val in w.items():
+                lo, hi = bounds[t]
+
+                if val > hi + 1e-8:
+                    total_excess += val - hi
+                    w[t] = hi
+                    out_of_bounds = True
+                elif val < lo - 1e-8:
+                    total_excess += val - lo
+                    w[t] = lo
+                    out_of_bounds = True
+                else:
+                    free_weight_sum += val
+                    free_assets.append(t)
+
+            if not out_of_bounds or not free_assets:
+                break
+
+            # Redistribute excess to free assets (proportional)
+            if free_weight_sum > 0:
+                for t in free_assets:
+                    w[t] = max(0.0, w[t] + total_excess * (w[t] / free_weight_sum))
+            else:
+                for t in free_assets:
+                    w[t] += total_excess / len(free_assets)
+
+        # 4. Final normalization — only scale FREE assets to avoid
+        #    pushing capped assets above max_weight.
+        total = sum(w.values())
+        if abs(total - 1.0) > 1e-8:
+            capped = {t for t in tickers if abs(w[t] - bounds[t][1]) < 1e-8
+                       or abs(w[t] - bounds[t][0]) < 1e-8}
+            free = [t for t in tickers if t not in capped]
+            free_sum = sum(w[t] for t in free)
+            deficit = 1.0 - total
+            if free and free_sum > 1e-10:
+                for t in free:
+                    w[t] += deficit * (w[t] / free_sum)
+            else:
+                # All assets capped — uniform scale as last resort
+                w = {t: v / total for t, v in w.items()}
+            logger.debug("Post-waterfill adjust: deficit was {:.6f}", deficit)
+
+        return w
+    
 
     # ------------------------------------------------------------------
     # Public API
@@ -424,6 +525,7 @@ class HRPOptimizer:
         self,
         returns: pl.DataFrame,
         confidences: dict[str, float] | None = None,
+        previous_weights: dict[str, float] | None = None,
     ) -> HRPResult:
         """Run the full HRP pipeline.
 
@@ -508,8 +610,13 @@ class HRPOptimizer:
                 {k: round(v, 4) for k, v in final_weights.items()},
             )
         else:
-            # Still apply clipping and normalisation for consistency
-            final_weights = self._clip_and_normalise(raw_weights)
+            final_weights = raw_weights.copy()
+
+        # --- Step 7: Otimização final com restrições e inércia ---
+        final_weights = self._apply_constraints_and_normalise(
+            target_weights=final_weights,
+            previous_weights=previous_weights
+        )
 
         # Store linkage as list[list[float]] for serialisation
         link_list = link.tolist()

@@ -22,11 +22,10 @@ def mock_engine() -> MagicMock:
 
 @pytest.fixture()
 def sample_yf_dataframe() -> pd.DataFrame:
-    """Return a Pandas DataFrame that mimics yfinance MultiIndex output.
+    """Return a Pandas DataFrame that mimics ``yf.Ticker().history()`` output.
 
-    Columns are a MultiIndex with levels (Price, Ticker), and the index
-    is a DatetimeIndex named ``Date`` -- exactly what ``yf.download``
-    returns when ``auto_adjust=False``.
+    Columns are simple strings (Open, High, Low, Close, Volume, Dividends,
+    Stock Splits), and the index is a DatetimeIndex named ``Date``.
     """
     n = 5
     base_date = date(2024, 1, 2)
@@ -34,24 +33,18 @@ def sample_yf_dataframe() -> pd.DataFrame:
         [base_date + timedelta(days=i) for i in range(n)],
         name="Date",
     )
-    ticker = "SPY"
-
-    arrays = [
-        ["Open", "High", "Low", "Close", "Volume", "Adj Close"],
-        [ticker] * 6,
-    ]
-    columns = pd.MultiIndex.from_arrays(arrays)
 
     data = {
-        ("Open", ticker): [450.0 + i for i in range(n)],
-        ("High", ticker): [455.0 + i for i in range(n)],
-        ("Low", ticker): [448.0 + i for i in range(n)],
-        ("Close", ticker): [452.0 + i for i in range(n)],
-        ("Volume", ticker): [80_000_000 + i * 1_000_000 for i in range(n)],
-        ("Adj Close", ticker): [451.0 + i for i in range(n)],
+        "Open": [450.0 + i for i in range(n)],
+        "High": [455.0 + i for i in range(n)],
+        "Low": [448.0 + i for i in range(n)],
+        "Close": [452.0 + i for i in range(n)],
+        "Volume": [80_000_000 + i * 1_000_000 for i in range(n)],
+        "Dividends": [0.0] * n,
+        "Stock Splits": [0.0] * n,
     }
 
-    return pd.DataFrame(data, index=dates, columns=columns)
+    return pd.DataFrame(data, index=dates)
 
 
 @pytest.fixture()

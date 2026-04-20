@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from src.agents.rag import COLLECTION_NAME, FinancialRAG, _date_sort_key
+from src.agents.rag import COLLECTION_NAME, FinancialRAG
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +388,33 @@ class TestEmbedPendingNews:
         assert result == 0
         mock_collection.upsert.assert_not_called()
 
+    def test_empty_articles_marked_as_embedded(
+        self,
+        rag: FinancialRAG,
+        mock_engine: MagicMock,
+        mock_collection: MagicMock,
+        mock_st_model: MagicMock,
+    ) -> None:
+        """Articles with empty content must be marked as embedded to prevent
+        infinite re-loading from PostgreSQL."""
+        articles = [
+            _make_article(id=10, title="", summary=""),
+            _make_article(id=20, title=None, summary=None),
+        ]
+        self._setup_pending(rag, mock_engine, articles)
+        begin_conn = mock_engine.begin.return_value.__enter__.return_value
+
+        rag.embed_pending_news()
+
+        # _mark_as_embedded must be called even though no embeddings were created
+        begin_conn.execute.assert_called_once()
+        call_args = begin_conn.execute.call_args
+        # _mark_as_embedded calls conn.execute(sql, {"ids": [...]}) — params are the
+        # second positional arg, not kwargs.
+        params = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs
+        marked_ids = params["ids"]
+        assert sorted(marked_ids) == [10, 20]
+
     def test_handles_none_date(
         self,
         rag: FinancialRAG,
@@ -659,20 +686,20 @@ class TestRetrieve:
 
         assert len(results) == 3
 
-    def test_n_results_is_capped_at_50(
+    def test_n_results_is_capped_at_500(
         self,
         rag: FinancialRAG,
         mock_collection: MagicMock,
         mock_st_model: MagicMock,
     ) -> None:
-        """n_results passed to query is min(top_k * 3, 50)."""
+        """n_results passed to query is min(top_k * 40, 500)."""
         self._mock_query_results(mock_collection, [], [], [])
         mock_st_model.encode.return_value = np.array([[0.1, 0.2, 0.3]])
 
         rag.retrieve("NVDA", "test", top_k=20)
 
         query_call = mock_collection.query.call_args
-        assert query_call.kwargs["n_results"] == 50  # min(20*3, 50) = 50
+        assert query_call.kwargs["n_results"] == 500  # min(20*40, 500) = 500
 
     def test_empty_date_articles_sort_last(
         self,
@@ -731,28 +758,3 @@ class TestGetCollectionCount:
         assert rag.get_collection_count() == 0
 
 
-# ===================================================================
-# 8. _date_sort_key helper
-# ===================================================================
-
-
-class TestDateSortKey:
-    """Tests for the module-level _date_sort_key helper."""
-
-    def test_returns_date_string_for_valid_input(self) -> None:
-        """Valid ISO date string is returned unchanged."""
-        assert _date_sort_key("2026-03-01") == "2026-03-01"
-
-    def test_returns_empty_for_empty_input(self) -> None:
-        """Empty string returns empty string."""
-        assert _date_sort_key("") == ""
-
-    def test_returns_empty_for_none_like_falsy(self) -> None:
-        """Falsy input returns empty string."""
-        assert _date_sort_key("") == ""
-
-    def test_lexicographic_ordering(self) -> None:
-        """ISO date strings sort correctly lexicographically."""
-        dates = ["2026-01-15", "2026-03-01", "2025-12-31"]
-        sorted_dates = sorted(dates, key=_date_sort_key, reverse=True)
-        assert sorted_dates == ["2026-03-01", "2026-01-15", "2025-12-31"]

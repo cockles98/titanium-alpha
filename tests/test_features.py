@@ -244,6 +244,71 @@ class TestComputeAllFeatures:
         result = compute_all_features(sample_ohlcv_df)
         assert result.height == sample_ohlcv_df.height
 
+    def test_multi_ticker_isolation(self) -> None:
+        """Features for each ticker must be independent (no cross-contamination)."""
+        from datetime import date, timedelta
+
+        n = 60
+        dates = [date(2023, 1, 1) + timedelta(days=i) for i in range(n)]
+
+        # Two tickers with very different price levels
+        spy = pl.DataFrame({
+            "date": dates, "ticker": ["SPY"] * n,
+            "open": [450.0 + i * 0.1 for i in range(n)],
+            "high": [455.0 + i * 0.1 for i in range(n)],
+            "low": [445.0 + i * 0.1 for i in range(n)],
+            "close": [450.0 + i * 0.1 for i in range(n)],
+            "volume": [80_000_000] * n,
+        })
+        nvda = pl.DataFrame({
+            "date": dates, "ticker": ["NVDA"] * n,
+            "open": [800.0 + i * 0.2 for i in range(n)],
+            "high": [810.0 + i * 0.2 for i in range(n)],
+            "low": [790.0 + i * 0.2 for i in range(n)],
+            "close": [800.0 + i * 0.2 for i in range(n)],
+            "volume": [50_000_000] * n,
+        })
+
+        combined = pl.concat([spy, nvda])
+
+        # Compute features on combined and on each ticker alone
+        combined_result = compute_all_features(combined)
+        spy_only = compute_all_features(spy)
+        nvda_only = compute_all_features(nvda)
+
+        # Extract each ticker's features from combined result
+        spy_from_combined = combined_result.filter(pl.col("ticker") == "SPY")
+        nvda_from_combined = combined_result.filter(pl.col("ticker") == "NVDA")
+
+        # Features must match exactly (no cross-contamination)
+        for col in ["rsi_14", "bb_upper", "bb_middle", "bb_lower",
+                     "realized_vol_21", "vwap", "obv"]:
+            spy_solo = spy_only[col].to_list()
+            spy_combo = spy_from_combined[col].to_list()
+            for i, (s, c) in enumerate(zip(spy_solo, spy_combo)):
+                if s is None and c is None:
+                    continue
+                assert s is not None and c is not None, (
+                    f"Null mismatch in SPY.{col}[{i}]: solo={s}, combo={c}"
+                )
+                assert abs(s - c) < 1e-10, (
+                    f"Cross-ticker contamination in SPY.{col}[{i}]: "
+                    f"solo={s}, combo={c}"
+                )
+
+            nvda_solo = nvda_only[col].to_list()
+            nvda_combo = nvda_from_combined[col].to_list()
+            for i, (s, c) in enumerate(zip(nvda_solo, nvda_combo)):
+                if s is None and c is None:
+                    continue
+                assert s is not None and c is not None, (
+                    f"Null mismatch in NVDA.{col}[{i}]: solo={s}, combo={c}"
+                )
+                assert abs(s - c) < 1e-10, (
+                    f"Cross-ticker contamination in NVDA.{col}[{i}]: "
+                    f"solo={s}, combo={c}"
+                )
+
 
 # ---------------------------------------------------------------------------
 # TestValidation

@@ -188,9 +188,9 @@ class TestMakeEmptyState:
         state = make_empty_state("AAPL")
         assert state["technical_features"] == {}
 
-    def test_predictions_zeroed(self) -> None:
+    def test_predictions_neutral_prior(self) -> None:
         state = make_empty_state("SPY")
-        assert state["predictions"]["prob_up"] == 0.0
+        assert state["predictions"]["prob_up"] == 0.5
         assert state["predictions"]["expected_return"] == 0.0
         assert state["predictions"]["quantiles"] == {}
 
@@ -276,6 +276,19 @@ class TestValidateDecision:
         errors = validate_decision(decision)
         assert any("hold" in e.lower() for e in errors)
 
+    def test_low_confidence_weight_must_be_zero(self) -> None:
+        """HOLD with confidence<0.3 but non-zero weight must be flagged."""
+        decision = FinalDecision(
+            ticker="SPY",
+            action="HOLD",
+            confidence=0.2,
+            suggested_weight=0.15,
+            reasoning="Low confidence but weight was not zeroed.",
+            dissenting_view="N/A",
+        )
+        errors = validate_decision(decision)
+        assert any("weight" in e.lower() and "0.0" in e for e in errors)
+
     def test_low_confidence_hold_is_valid(self) -> None:
         decision = FinalDecision(
             ticker="SPY",
@@ -291,15 +304,30 @@ class TestValidateDecision:
 
     def test_all_valid_actions(self) -> None:
         for action in VALID_ACTIONS:
+            # SELL must have weight=0.0 (3-tier model: SELL=0)
+            weight = 0.0 if action == "SELL" else 0.1
             decision = FinalDecision(
                 ticker="SPY",
                 action=action,
                 confidence=0.5,
-                suggested_weight=0.1,
+                suggested_weight=weight,
                 reasoning="Test.",
                 dissenting_view="N/A",
             )
             assert validate_decision(decision) == []
+
+    def test_sell_with_nonzero_weight(self) -> None:
+        """SELL action with non-zero weight must be flagged."""
+        decision = FinalDecision(
+            ticker="SPY",
+            action="SELL",
+            confidence=0.8,
+            suggested_weight=0.15,
+            reasoning="Exiting position.",
+            dissenting_view="N/A",
+        )
+        errors = validate_decision(decision)
+        assert any("sell" in e.lower() and "weight" in e.lower() for e in errors)
 
     def test_max_weight_boundary(self) -> None:
         decision = FinalDecision(

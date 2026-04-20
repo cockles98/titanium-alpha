@@ -26,7 +26,8 @@ class TickerPrediction(TypedDict):
     Attributes:
         ticker: Asset symbol (e.g. ``"SPY"``).
         prob_up: Probability of price increase over the forecast horizon.
-        expected_return: Simple expected return (mean of quantile deltas).
+        expected_return: Simple return from the median forecast
+            ``(Q(0.5) − close) / close``.
         quantiles: Mapping of quantile labels to forecast values,
             e.g. ``{"q0.1": 95.0, "q0.5": 100.0, "q0.9": 105.0}``.
     """
@@ -118,6 +119,7 @@ class InvestmentState(TypedDict):
 VALID_SIGNALS = frozenset({"bullish", "bearish", "neutral"})
 VALID_ACTIONS = frozenset({"BUY", "SELL", "HOLD"})
 MAX_SINGLE_WEIGHT = 0.25
+MIN_CONFIDENCE_FOR_ACTION = 0.3
 
 
 def make_empty_state(ticker: str) -> InvestmentState:
@@ -134,7 +136,7 @@ def make_empty_state(ticker: str) -> InvestmentState:
         ticker=ticker,
         predictions=TickerPrediction(
             ticker=ticker,
-            prob_up=0.0,
+            prob_up=0.5,
             expected_return=0.0,
             quantiles={},
         ),
@@ -208,10 +210,22 @@ def validate_decision(decision: FinalDecision) -> list[str]:
             f"Weight must be in [0.0, {MAX_SINGLE_WEIGHT}], got {weight}"
         )
 
-    if confidence is not None and confidence < 0.3 and action != "HOLD":
+    # SELL must always target zero weight (3-tier model: SELL=0)
+    if action == "SELL" and weight is not None and weight > 0.0:
         errors.append(
-            f"Action must be HOLD when confidence < 0.3 (got {action} "
-            f"with confidence={confidence})"
+            f"Weight must be 0.0 when action is SELL, got {weight}"
         )
+
+    if confidence is not None and confidence < MIN_CONFIDENCE_FOR_ACTION:
+        if action != "HOLD":
+            errors.append(
+                f"Action must be HOLD when confidence < {MIN_CONFIDENCE_FOR_ACTION} "
+                f"(got {action} with confidence={confidence})"
+            )
+        if weight is not None and weight > 0.0:
+            errors.append(
+                f"Weight must be 0.0 when confidence < {MIN_CONFIDENCE_FOR_ACTION} "
+                f"(got {weight} with confidence={confidence})"
+            )
 
     return errors

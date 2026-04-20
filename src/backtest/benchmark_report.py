@@ -388,7 +388,7 @@ def _rolling_sharpe(
     Returns:
         List of rolling Sharpe values (length = len(returns) - window + 1).
     """
-    rf_daily = rf / trading_days
+    rf_daily = (1.0 + rf) ** (1.0 / trading_days) - 1.0
     result: list[float] = []
     for i in range(window - 1, len(returns)):
         chunk = returns[i - window + 1: i + 1]
