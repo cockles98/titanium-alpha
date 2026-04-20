@@ -1393,7 +1393,7 @@ def _render_final_decision_card(decision: dict[str, Any]) -> None:
             {AGENT_STYLES['pm']['icon']} FINAL DECISION: {action}
         </h3>
         <p style="color: {_TEXT}; margin: 8px 0;">
-            Weight: <strong>{decision.get('weight', 0):.4f}</strong> |
+            Weight: <strong>{decision.get('weight', decision.get('suggested_weight', 0)):.4f}</strong> |
             Confidence: <strong>{decision.get('confidence', 0):.2f}</strong>
         </p>
         <p style="color: #AAA; font-size: 0.9em;">
