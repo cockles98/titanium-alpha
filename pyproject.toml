@@ -1,9 +1,36 @@
 [project]
 name = "titanium-alpha"
-version = "0.1.0"
-description = "Agentic multi-strategy hedge fund combining PatchTST, LangGraph multi-agent debate, financial RAG, CPCV backtesting, and HRP allocation"
+version = "1.0.0"
+description = "Agentic multi-strategy hedge fund combining PatchTST, LangGraph multi-agent debate, financial RAG, CPCV-OOS backtesting, and HRP allocation"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-    {name = "Felipe"}
+    {name = "Felipe Cockles", email = "felipe.cockles@hotmail.com"}
+]
+keywords = [
+    "quantitative-finance",
+    "algorithmic-trading",
+    "portfolio-optimization",
+    "machine-learning",
+    "langgraph",
+    "patchtst",
+    "hrp",
+    "cpcv",
+    "deflated-sharpe",
+    "rag",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 requires-python = ">=3.10"
 dependencies = [
@@ -34,9 +61,16 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.14",
+    "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.11",
 ]
+
+[project.urls]
+Homepage = "https://github.com/cockles98/titanium-alpha"
+Repository = "https://github.com/cockles98/titanium-alpha"
+Issues = "https://github.com/cockles98/titanium-alpha/issues"
+Changelog = "https://github.com/cockles98/titanium-alpha/blob/master/CHANGELOG.md"
 
 [tool.poetry]
 package-mode = false

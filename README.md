@@ -3,7 +3,7 @@
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)
 ![Tests 1002](https://img.shields.io/badge/Tests-1002%20passing-brightgreen?logo=pytest&logoColor=white)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
-![CI](https://img.shields.io/badge/CI-passing-brightgreen?logo=github-actions&logoColor=white)
+[![CI](https://github.com/cockles98/titanium-alpha/actions/workflows/ci.yml/badge.svg)](https://github.com/cockles98/titanium-alpha/actions/workflows/ci.yml)
 
 An **agentic multi-strategy hedge fund system** that uses AI agents to debate investment decisions the way a real trading desk operates. Four specialized agents -- a Technical Analyst, a Fundamentalist, a Devil's Advocate, and a Portfolio Manager -- analyse deep learning forecasts, financial news, and market data, then argue their positions before committing capital. The system validates every strategy through **CPCV-OOS parameter optimization with Deflated Sharpe Ratio**, a **walk-forward backtest across 52 S&P 500 constituents** with triweekly rebalancing, volatility targeting, and risk-free cash carry -- then allocates risk using **Hierarchical Risk Parity with Ledoit-Wolf shrinkage**. A **three-tier fine-tuning grid search** (547 configs) with resume capability, PatchTST model caching, and top-N ticker selection enables systematic parameter optimization at scale.
 
@@ -173,7 +173,7 @@ Renders PatchTST's 5-quantile forecast as a fan chart (80% / 50% / median / 50% 
 
 ```bash
 # 1. Clone and install dependencies
-git clone https://github.com/your-username/titanium-alpha.git
+git clone https://github.com/cockles98/titanium-alpha.git
 cd titanium-alpha && poetry install --no-root
 
 # 2. Start PostgreSQL and ChromaDB

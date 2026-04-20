@@ -368,7 +368,7 @@ Top grounded: NVDA (3 citations), AAPL (2), TSLA (2), BAC (2), META (1, SELL con
 - [x] Screenshot da aba Microstructure (fan chart) — `docs/images/microstructure.png`
 - [x] Seção "Limitations" explicitamente documentando o backtest-produção gap (ganha credibilidade — é o que separa quant sério de entusiasta)
 - [x] Subseção "Stochastic debate" na Limitations: explicar que `make decide` é estocástico (temperature=0.2 analistas + 0.1 PM) — tickers borderline (ex.: PEP na Fase 1.2) oscilam entre BUY/HOLD em reruns; `decisions.json` é snapshot de uma run, não média. Tickers robustos (ex.: PG) reproduzem consistentemente no Live Debate. Gate de `MIN_CONFIDENCE_FOR_ACTION=0.3` é a fronteira que decide.
-- [ ] Atualizar badge de CI com link para última run no GitHub Actions
+- [x] Atualizar badge de CI com link para última run no GitHub Actions — badge dinâmico `github.com/cockles98/titanium-alpha/actions/workflows/ci.yml/badge.svg` + link clicável; `git clone` com username placeholder corrigido para `cockles98`
 - [x] Adicionar citations: Lopez de Prado (HRP + CPCV), Bailey & Lopez de Prado (DSR), Nie et al. (PatchTST) — + Ledoit-Wolf, Chernozhukov, Reimers-Gurevych
 
 ### 4.2 — Notebook consolidado: metodologia + resultados
@@ -400,8 +400,8 @@ Criar `notebooks/methodology_and_results.ipynb` com estrutura:
   - [x] Three-tier weight model (BUY/HOLD/SELL) — documentado em `decision_engine.py` entry
   - [x] Ex-ante volatility targeting vs ex-post
   - [x] CPCV-OOS + holdout vs CPCV alone (captura o tradeoff Option A/B do design_gap no ângulo da validação)
-- [ ] Remover planos futuros não implementados — não verificado nesta passagem; revisar antes da publicação
-- [ ] Garantir que os diagramas Mermaid renderizam — não verificado; testar no preview do GitHub antes do lançamento
+- [x] Remover planos futuros não implementados — scan do README via grep (`TODO|FIXME|planned|future work|roadmap|will be|will include|not yet`) não encontrou promessas vazias; a única menção a "not yet been backtested" refere-se ao backtest-production gap (documentação honesta, não promessa futura)
+- [ ] Garantir que os diagramas Mermaid renderizam — **requer verificação manual no preview do GitHub após tornar público**
 
 ### 4.4 — Publicação dos agentes de desenvolvimento (se D3 = sim)
 
@@ -418,19 +418,19 @@ Criar `notebooks/methodology_and_results.ipynb` com estrutura:
 
 ### 5.1 — Auditoria de segurança
 
-- [ ] `git log --all --full-history -- .env` — confirmar que **nunca** foi commitado (histórico atual: limpo)
-- [ ] `git log --all --full-history -- '*.env'` — mesma checagem genérica
-- [ ] Grep por patterns de API keys: `rg -i "sk-[a-z0-9]{30,}|AIza[a-zA-Z0-9_-]{35}"` em `src/`, `tests/`, `notebooks/`
-- [ ] Verificar que `.env.example` não tem valores reais, só placeholders
-- [ ] Limpar output de notebooks: `jupyter nbconvert --clear-output notebooks/*.ipynb`
-- [ ] Revisar `CLAUDE.md` e `memory/` — remover qualquer referência a infraestrutura privada
+- [x] `git log --all --full-history -- .env` — confirmado limpo (zero commits)
+- [x] `git log --all --full-history -- '*.env'` — confirmado limpo
+- [x] Grep por patterns de API keys: `sk-[a-zA-Z0-9]{30,}|AIza[a-zA-Z0-9_-]{35}` no repo inteiro — **zero matches**
+- [x] `.env.example` validado — apenas placeholders (`your-gemini-api-key`, `your-newsapi-key`, `changeme`)
+- [x] Notebook `methodology_and_results.ipynb` com outputs limpos (grep `"outputs":\s*\[[^\]]` = 0 ocorrências)
+- [x] `CLAUDE.md` revisado — sem infraestrutura privada; paths referem-se apenas a `data/outputs/`, `docs/`, `src/`; memory files residem em `~/.claude/projects/` (fora do repo)
 
 ### 5.2 — LICENSE + metadados
 
-- [ ] **Criar arquivo `LICENSE`** (MIT) — atualmente só existe o badge no README, não o arquivo
-- [ ] Atualizar `pyproject.toml`: `version = "1.0.0"`, `description`, `authors`, `homepage`, `repository`
-- [ ] Criar `CHANGELOG.md` com highlights das Fases 1-8 (condensado)
-- [ ] Adicionar `CONTRIBUTING.md` básico: como rodar testes, padrões de commit, estrutura sagrada de pastas
+- [x] **`LICENSE`** criado (MIT, copyright 2026 Felipe Cockles)
+- [x] `pyproject.toml` atualizado: `version = "1.0.0"`, author com email, `license = {text = "MIT"}`, `readme`, `keywords` (10 tags), `classifiers` (10 PyPI), `[project.urls]` (Homepage/Repository/Issues/Changelog para `cockles98/titanium-alpha`), `pytest-cov>=5.0` adicionado às dev deps
+- [x] `CHANGELOG.md` criado — v1.0.0 cobre Added/Fixed/Known limitations/Methodological stance consolidando as 8 fases técnicas
+- [x] `CONTRIBUTING.md` criado — setup, workflow com `.claude/agents/`, commit format, code style rules, sacred folder structure, testing expectations, "what NOT to PR"
 
 ### 5.3 — CI/CD: verificação final
 

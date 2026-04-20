@@ -32,9 +32,10 @@ data/outputs/
 models/checkpoints/
 models/wf_cache/
 
-# Notebooks output
+# Notebooks output (exploration only; published notebooks are allow-listed)
 notebooks/*.ipynb
 !notebooks/.gitkeep
+!notebooks/methodology_and_results.ipynb
 
 # OS
 .DS_Store
