@@ -331,7 +331,7 @@ def run_us_benchmark(
     config_path: str = "config/tickers.json",
     output_dir: str = "data/outputs",
     use_patchtst: bool = True,
-    n_years: int = 10,
+    n_years: int = 13,
     ohlcv: pl.DataFrame | None = None,
     top_n: int | None = None,
 ) -> WalkForwardResult:

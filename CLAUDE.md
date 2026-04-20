@@ -43,7 +43,7 @@ docs: apenas documentação
 
 ## Contexto financeiro importante
 - Universo: 52 large caps US + SPY benchmark (config/tickers.json)
-- Período de dados: últimos 12 anos (OHLCV diário via yfinance, ~3015 rows/ticker)
+- Período de dados: últimos 15 anos (OHLCV diário via yfinance, ~3775 rows/ticker, 199.009 rows totais)
 - Benchmark: SPY buy-and-hold
 - Métricas-chave: Sharpe Ratio anualizado (rf=0.05), Max Drawdown, CAGR
 
@@ -57,7 +57,8 @@ docs: apenas documentação
 - min_rebalance_delta=0.02
 - top_n=None, killswitch=None (ambos prejudiciais)
 - Baseline pré-tuning: Sharpe=0.611, CAGR=14.62%, MaxDD=-31.69%, Beta=0.842
-- Recorde walk-forward (pós fine-tuning sessão 39): Sharpe=0.712, CAGR=13.35%, MaxDD=-18.43%, Beta=0.532
+- Recorde walk-forward 2y (pós fine-tuning sessão 39): Sharpe=0.712, CAGR=13.35%, MaxDD=-18.43%, Beta=0.532
+- **Recorde walk-forward 10y OOS (sessão 42, DB 15y)**: Sharpe=0.766, CAGR=13.68%, MaxDD=-21.94%, Beta=0.566, Alpha=+2.57%
 - TENTATIVA validation_6 (rb=21/mw=0.10): Sharpe=0.462 — REGRESSÃO, revertido
 - Análise completa: data/outputs/validation_3tier_analysis.md | data/outputs/validation_6/
 - LIÇÃO: max_weight solto (0.10) deixa HRP concentrar ~8.5% em DUK (utilities) — restrição 2/n é funcional
@@ -124,7 +125,7 @@ ou BUY com confidence=0.5. Ver docs/design_gap_backtest_vs_production.md.
 - PatchTST: CDF rearrangement para monotonicity de quantis, NaN guards em predict
 - Ingestão: corrigido bug thread-safety do yf.download() → yf.Ticker().history()
   (22 de 52 tickers tinham dados idênticos aos vizinhos adjacentes em tickers.json)
-- DB limpo e re-populado com 12 anos de dados (2014-2026) via API thread-safe
+- DB limpo e re-populado com 12 anos de dados (2014-2026) via API thread-safe (atualizado para 15y na sessão 42)
 - SPY benchmark adicionado explicitamente à ingestão (não está na lista de tickers)
 - Testes: 761 passando, 5 pré-existentes corrigidos (config desatualizada, rf geométrico)
 - Benchmark com dados limpos: Sharpe=0.611, CAGR=14.62%, MaxDD=-31.69%, Alpha=0.024
@@ -135,10 +136,19 @@ ou BUY com confidence=0.5. Ver docs/design_gap_backtest_vs_production.md.
 - Findings: target_vol=0.10 (+0.035 Sharpe), rb=15, max_weight=0.06, ward+shrink+pearson
 - top_n e killswitch prejudiciais (removidos); delta, tilt, turnover irrelevantes
 - Config champion aplicada ao run_benchmark.py
-- Recorde walk-forward: Sharpe=0.712, CAGR=13.35%, MaxDD=-18.43%, Beta=0.532
+- Recorde walk-forward 2y (sessão 39): Sharpe=0.712, CAGR=13.35%, MaxDD=-18.43%, Beta=0.532
 - Trade-off: CAGR menor (13.35% vs 14.62%) mas risco cortado pela metade (MaxDD -18% vs -32%)
 
-**Status atual:** 1002 testes passando | Fases 1-8 completas
+### Fase 9 — Publicação (Sessões 41-42)
+- Sessão 41: .claude/agents/ refinados (architect, docs-writer, quant-reviewer, security-data, test-writer),
+  dashboard bug fix (decision.get suggested_weight fallback), 17 deprecações use_container_width fixadas,
+  RAG populada (172 artigos, P95=101ms), cobertura src.agents=90%
+- Sessão 42: DB expandido para 15 anos (199.009 rows, 2011-2026) — antes tinha apenas 5y após reset Docker
+- Benchmark 10y OOS (rebalance para mostrar ≥10y de equity após warmup 756d): Sharpe=0.766,
+  CAGR=13.68%, MaxDD=-21.94%, Alpha=+2.57%, Beta=0.566, Total Return=259.3%, Tracking Error=9.11%
+- 2514 dias de equity ativa (2016-04-19 → 2026-04-17), n_years=13 em run_benchmark.py
+
+**Status atual:** 1002 testes passando | Fases 1-8 completas + Fase 9 (publicação) em andamento
 
 ## O que NUNCA fazer
 - Nunca hardcode API keys (usar .env + python-dotenv)

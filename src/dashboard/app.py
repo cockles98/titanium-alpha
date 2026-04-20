@@ -571,7 +571,7 @@ def tab_benchmark(
                     "DSR p-value": f"{data.get('p_value', 0):.3f}",
                     "Accepted": "YES" if data.get("accepted") else "no",
                 })
-            st.dataframe(rows, use_container_width=True, hide_index=True)
+            st.dataframe(rows, width="stretch", hide_index=True)
 
     # Equity curve with log toggle
     col_toggle, _ = st.columns([1, 4])
@@ -579,11 +579,11 @@ def tab_benchmark(
         log_scale = st.checkbox("Log scale", value=False, key="bench_log")
 
     fig_equity = _chart_benchmark_equity(equity_df, log_scale=log_scale)
-    st.plotly_chart(fig_equity, use_container_width=True)
+    st.plotly_chart(fig_equity, width="stretch")
 
     # Drawdown
     fig_dd = _chart_benchmark_drawdown(equity_df)
-    st.plotly_chart(fig_dd, use_container_width=True)
+    st.plotly_chart(fig_dd, width="stretch")
 
     st.divider()
 
@@ -639,7 +639,7 @@ def tab_benchmark(
     )
     fig_sharpe = _chart_rolling_sharpe(equity_df, window=window)
     if fig_sharpe:
-        st.plotly_chart(fig_sharpe, use_container_width=True)
+        st.plotly_chart(fig_sharpe, width="stretch")
     else:
         st.info(f"Insufficient data for {window}-day rolling Sharpe.")
 
@@ -649,9 +649,27 @@ def tab_benchmark(
     st.subheader("Portfolio Weight Evolution")
     fig_heatmap = _chart_weight_heatmap(weights_df)
     if fig_heatmap:
-        st.plotly_chart(fig_heatmap, use_container_width=True)
+        st.plotly_chart(fig_heatmap, width="stretch")
     else:
         st.info("No weight history available.")
+
+    # PDF export
+    st.divider()
+    pdf_path = DATA_DIR / "benchmark_report.pdf"
+    if pdf_path.exists():
+        with pdf_path.open("rb") as f:
+            st.download_button(
+                label="Download Benchmark Report (PDF)",
+                data=f.read(),
+                file_name="titanium_benchmark_report.pdf",
+                mime="application/pdf",
+                width="stretch",
+            )
+    else:
+        st.caption(
+            "PDF report not generated yet. Run `make benchmark` to produce "
+            "`data/outputs/benchmark_report.pdf`."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -700,7 +718,7 @@ def _render_benchmark_weight_table(weights_df: Any) -> None:
         for r in latest.to_dicts()
     ]
     st.caption(f"Rebalance date: {latest_date}")
-    st.dataframe(rows, use_container_width=True, hide_index=True, height=400)
+    st.dataframe(rows, width="stretch", hide_index=True, height=400)
 
 
 def _chart_weight_donut(
@@ -926,7 +944,7 @@ def _render_decision_table(decisions: dict[str, Any]) -> None:
 
     st.dataframe(
         rows,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1208,7 +1226,7 @@ def _render_weight_delta(
         }
         for d in deltas[:15]
     ]
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.dataframe(rows, width="stretch", hide_index=True)
 
 
 def tab_performance(
@@ -1283,12 +1301,12 @@ def tab_performance(
     col_left, col_right = st.columns(2)
     with col_left:
         st.plotly_chart(
-            _chart_weight_donut(weights_final), use_container_width=True
+            _chart_weight_donut(weights_final), width="stretch"
         )
     with col_right:
         st.plotly_chart(
             _chart_weight_comparison(weights_raw, weights_final),
-            use_container_width=True,
+            width="stretch",
         )
 
     # --- Confidence distribution + action breakdown ---
@@ -1299,10 +1317,10 @@ def tab_performance(
             col_conf, col_action = st.columns([3, 1])
             if fig_conf:
                 with col_conf:
-                    st.plotly_chart(fig_conf, use_container_width=True)
+                    st.plotly_chart(fig_conf, width="stretch")
             if fig_action:
                 with col_action:
-                    st.plotly_chart(fig_action, use_container_width=True)
+                    st.plotly_chart(fig_action, width="stretch")
 
     st.divider()
 
@@ -1524,7 +1542,7 @@ def tab_war_room(
             "Replay Debate",
             disabled=not has_debate,
             key="replay_btn",
-            use_container_width=True,
+            width="stretch",
         )
 
     with col_live:
@@ -1533,7 +1551,7 @@ def tab_war_room(
             "Run Live Debate" if not is_running else "Running...",
             disabled=is_running,
             key="live_btn",
-            use_container_width=True,
+            width="stretch",
         )
 
     st.divider()
@@ -1666,13 +1684,15 @@ def _render_live_debate() -> None:
         load_decisions.clear()
         load_debate_history.clear()
     else:
-        # Still running — show spinner and auto-refresh
-        st.markdown(
-            f"""<div style="
-                text-align: center; padding: 20px;
-                color: {_ACCENT_GOLD};
-            ">⏳ Agents are deliberating...</div>""",
-            unsafe_allow_html=True,
+        # Progress bar based on completed nodes (6 per ticker)
+        completed_nodes = {
+            (e[1], e[2]) for e in events if e[0] == "node"
+        }
+        total_expected = 6  # load_context, rag, technical, fundamental, bear, pm
+        progress = min(len(completed_nodes) / total_expected, 0.99)
+        st.progress(
+            progress,
+            text=f"Agents are deliberating... ({len(completed_nodes)}/{total_expected} nodes)",
         )
         time.sleep(1.0)
         st.rerun()
@@ -1992,7 +2012,7 @@ def tab_microstructure(
         if predictions and selected in predictions:
             close_ref = predictions[selected].get("last_close")
         fig = _chart_quantile_fan(forecast[selected], selected, last_close=close_ref)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         st.divider()
 
     # --- Benchmark per-ticker stats ---
@@ -2009,7 +2029,7 @@ def tab_microstructure(
 
             fig_wh = _chart_ticker_weight_history(bench_weights, selected)
             if fig_wh:
-                st.plotly_chart(fig_wh, use_container_width=True)
+                st.plotly_chart(fig_wh, width="stretch")
         else:
             st.info(f"No benchmark weight data for {selected}.")
 
@@ -2019,7 +2039,7 @@ def tab_microstructure(
             bench_equity, selected
         )
         if fig_cr:
-            st.plotly_chart(fig_cr, use_container_width=True)
+            st.plotly_chart(fig_cr, width="stretch")
 
     # --- No data at all for this ticker ---
     if (
@@ -2035,6 +2055,40 @@ def tab_microstructure(
 # ---------------------------------------------------------------------------
 
 
+def _render_sidebar() -> None:
+    """Render sidebar with About, methodology link, and GitHub."""
+    with st.sidebar:
+        st.markdown("### About")
+        st.markdown(
+            "**Titanium Alpha** is a research project combining "
+            "deep learning forecasts (PatchTST), an agentic "
+            "debate layer (LangGraph), hierarchical risk parity "
+            "allocation (HRP), and CPCV-OOS validation."
+        )
+        st.divider()
+        st.markdown("### Links")
+        st.markdown("- [GitHub repository](https://github.com/)")
+        st.markdown("- [Methodology (docs/)](https://github.com/)")
+        st.markdown("- [Benchmark analysis](https://github.com/)")
+        st.divider()
+        st.caption(
+            "Walk-forward record: Sharpe=0.712, CAGR=13.35%, "
+            "MaxDD=-18.43%, Beta=0.532 (rf=5%)."
+        )
+
+
+def _format_last_update(decisions: dict[str, Any] | None) -> str:
+    """Return a short 'last update' string from decisions timestamp."""
+    if not decisions or not decisions.get("timestamp"):
+        return "no decisions.json yet"
+    ts = decisions["timestamp"]
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+    except (ValueError, AttributeError):
+        return str(ts)[:19]
+
+
 def main() -> None:
     """Streamlit entry point."""
     st.set_page_config(
@@ -2042,17 +2096,6 @@ def main() -> None:
         page_icon="🏦",
         layout="wide",
         initial_sidebar_state="collapsed",
-    )
-
-    # Title
-    st.markdown(
-        """<h1 style="text-align: center; color: #4A90D9;">
-        🏦 Titanium Alpha
-        </h1>
-        <p style="text-align: center; color: #888; margin-top: -10px;">
-        Agentic Multi-Strategy Hedge Fund Dashboard
-        </p>""",
-        unsafe_allow_html=True,
     )
 
     # Load all data
@@ -2063,6 +2106,23 @@ def main() -> None:
     bench_equity = load_benchmark_equity()
     bench_metrics = load_benchmark_metrics()
     bench_weights = load_benchmark_weights()
+
+    _render_sidebar()
+
+    # Title + last update
+    last_update = _format_last_update(decisions)
+    st.markdown(
+        f"""<h1 style="text-align: center; color: #4A90D9;">
+        🏦 Titanium Alpha
+        </h1>
+        <p style="text-align: center; color: #888; margin-top: -10px;">
+        Agentic Multi-Strategy Hedge Fund Dashboard
+        </p>
+        <p style="text-align: center; color: #666; font-size: 0.85em; margin-top: -8px;">
+        Last update: <strong>{last_update}</strong>
+        </p>""",
+        unsafe_allow_html=True,
+    )
 
     # Tabs
     tab0, tab1, tab2, tab3 = st.tabs(
@@ -2079,7 +2139,11 @@ def main() -> None:
         if decisions:
             tab_war_room(decisions, debate)
         else:
-            st.warning("No decision data available. Run `make decide` first.")
+            st.warning(
+                "No decision data available. Run `make decide` from the "
+                "project root to generate `data/outputs/decisions.json`, "
+                "then refresh this page."
+            )
 
     with tab3:
         tab_microstructure(forecast, predictions, bench_weights, bench_equity)

@@ -408,8 +408,11 @@ class TestEmbedPendingNews:
 
         # _mark_as_embedded must be called even though no embeddings were created
         begin_conn.execute.assert_called_once()
-        call_kwargs = begin_conn.execute.call_args
-        marked_ids = call_kwargs[1]["ids"] if call_kwargs[1] else call_kwargs.kwargs["ids"]
+        call_args = begin_conn.execute.call_args
+        # _mark_as_embedded calls conn.execute(sql, {"ids": [...]}) — params are the
+        # second positional arg, not kwargs.
+        params = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs
+        marked_ids = params["ids"]
         assert sorted(marked_ids) == [10, 20]
 
     def test_handles_none_date(
@@ -683,20 +686,20 @@ class TestRetrieve:
 
         assert len(results) == 3
 
-    def test_n_results_is_capped_at_50(
+    def test_n_results_is_capped_at_500(
         self,
         rag: FinancialRAG,
         mock_collection: MagicMock,
         mock_st_model: MagicMock,
     ) -> None:
-        """n_results passed to query is min(top_k * 3, 50)."""
+        """n_results passed to query is min(top_k * 40, 500)."""
         self._mock_query_results(mock_collection, [], [], [])
         mock_st_model.encode.return_value = np.array([[0.1, 0.2, 0.3]])
 
         rag.retrieve("NVDA", "test", top_k=20)
 
         query_call = mock_collection.query.call_args
-        assert query_call.kwargs["n_results"] == 50  # min(20*3, 50) = 50
+        assert query_call.kwargs["n_results"] == 500  # min(20*40, 500) = 500
 
     def test_empty_date_articles_sort_last(
         self,

@@ -7,6 +7,12 @@
 
 An **agentic multi-strategy hedge fund system** that uses AI agents to debate investment decisions the way a real trading desk operates. Four specialized agents -- a Technical Analyst, a Fundamentalist, a Devil's Advocate, and a Portfolio Manager -- analyse deep learning forecasts, financial news, and market data, then argue their positions before committing capital. The system validates every strategy through **CPCV-OOS parameter optimization with Deflated Sharpe Ratio**, a **walk-forward backtest across 52 S&P 500 constituents** with triweekly rebalancing, volatility targeting, and risk-free cash carry -- then allocates risk using **Hierarchical Risk Parity with Ledoit-Wolf shrinkage**. A **three-tier fine-tuning grid search** (547 configs) with resume capability, PatchTST model caching, and top-N ticker selection enables systematic parameter optimization at scale.
 
+<p align="center">
+  <img src="docs/images/warroom_demo.gif" alt="War Room — live agent debate replay" width="860">
+  <br>
+  <em>War Room — the four-agent debate streaming live for each ticker, ending with the Portfolio Manager's verdict.</em>
+</p>
+
 ---
 
 ## Why This Matters
@@ -31,21 +37,31 @@ The result is an end-to-end system where every component -- from data ingestion 
 
 ---
 
-## Key Results (Walk-Forward Benchmark, 52 Tickers, 2016--2026)
+## Key Results (Walk-Forward Benchmark, 52 Tickers + SPY, 10 Years 2016--2026)
 
-| Metric | Fine-Tuned (record) | Pre-Tuning Baseline | Benchmark (SPY) |
-|---|---|---|---|
-| **Sharpe Ratio** | **0.712** | 0.611 | -- |
-| **CAGR** | 13.35% | 14.62% | ~13.5% |
-| **Total Return** | 140% | 197% | 157% |
-| **Max Drawdown** | **-18.43%** | -31.69% | -- |
-| **Sortino Ratio** | 1.000 | -- | -- |
-| **Calmar Ratio** | 0.725 | -- | -- |
-| **Alpha (CAPM)** | +2.70% | +2.38% | -- |
-| **Beta** | 0.532 | 0.842 | 1.0 |
-| **Ann. Volatility** | 11.73% | -- | -- |
+<p align="center">
+  <img src="docs/images/benchmark.png" alt="Benchmark dashboard — equity curve vs SPY, drawdown panel, rolling metrics" width="860">
+  <br>
+  <em>Benchmark tab — 10 years of walk-forward equity vs SPY, drawdown panel, rolling Sharpe, and weight heatmap.</em>
+</p>
 
-> **Note:** The fine-tuned config (rb=15, vol_target=10%, max_weight=6%, Ward+Ledoit-Wolf) was identified by a 3-tier CPCV-OOS grid search (547 configs). Volatility targeting at 10% annualized dramatically improved risk-adjusted returns: Sharpe +16% (0.611 -> 0.712), MaxDD halved (-31.7% -> -18.4%), beta cut from 0.84 to 0.53. The trade-off is lower raw CAGR (13.35% vs 14.62%) due to reduced exposure in high-volatility periods. Both use NaiveModelFactory on clean data (12 years, thread-safe `yf.Ticker().history()`) with 756-day covariance lookback and semi-annual retraining. The multi-agent debate layer has not yet been backtested. See [docs/design_gap_backtest_vs_production.md](docs/design_gap_backtest_vs_production.md) for details.
+| Metric | Fine-Tuned (10y OOS) | SPY Buy-and-Hold |
+|---|---|---|
+| **Sharpe Ratio** | **0.766** | -- |
+| **CAGR** | 13.68% | ~14.9% |
+| **Total Return** | 259.3% | 299.5% |
+| **Max Drawdown** | **-21.94%** | -- |
+| **Max DD Duration** | 361 days | -- |
+| **Sortino Ratio** | 1.058 | -- |
+| **Calmar Ratio** | 0.624 | -- |
+| **Alpha (CAPM)** | +2.57% | -- |
+| **Beta** | 0.566 | 1.0 |
+| **Ann. Volatility** | 11.19% | -- |
+| **Tracking Error** | 9.11% | -- |
+| **Avg Positions** | 52.0 | -- |
+| **Avg Annual Turnover** | 230% | -- |
+
+> **Note:** Walk-forward backtest over **10 years of out-of-sample equity** (2016-04-19 → 2026-04-17, 2514 trading days, 15 years of raw OHLCV with 3 years consumed as covariance warmup). Fine-tuned config (rb=15, vol_target=10%, max_weight=min(6%, 2/N)=3.85%, Ward+Ledoit-Wolf) was identified by a 3-tier CPCV-OOS grid search (547 configs). Volatility targeting at 10% annualized is the single biggest Sharpe driver. The strategy carries **~57% of the market beta** while generating **+2.57% Jensen's alpha**, producing a Sharpe of 0.766 vs SPY's 14.9% CAGR (lower absolute return, materially lower risk). Uses NaiveModelFactory on clean data (thread-safe `yf.Ticker().history()`) with 756-day covariance lookback and semi-annual retraining. The multi-agent debate layer has not yet been backtested. See [docs/design_gap_backtest_vs_production.md](docs/design_gap_backtest_vs_production.md) for details.
 
 ---
 
@@ -130,6 +146,26 @@ flowchart TB
 | **Data Ingestion** | `yf.Ticker().history()` with `auto_adjust=True` ensures split- and dividend-adjusted OHLCV prices throughout. Thread-safe per-ticker objects prevent data corruption in parallel downloads (the older `yf.download()` API shares internal session/cache state across threads, causing adjacent tickers to receive identical data). 12 years of history (2014--2026) for 52 tickers + SPY benchmark. |
 | **Streamlit Dashboard** | Four-tab interface: benchmark (equity curve, drawdown, rolling Sharpe, weight heatmap, CPCV-OOS results), portfolio performance (donut + bar charts), war room (agent debate replay with live streaming), and microstructure (fan charts with quantile bands and last-close reference line). |
 | **Feature Engineering** | RSI, Bollinger Bands, realized volatility, VWAP, OBV, relative volume -- all implemented in Polars with zero look-ahead bias (verified by quant reviewer). |
+
+---
+
+## Dashboard
+
+Four-tab Streamlit interface (`make dashboard`, then open `http://localhost:8501`). Every asset below is rendered from the same live data the backtester consumes -- no mocks, no cherry-picking.
+
+### War Room -- live agent debate
+<p align="center">
+  <img src="docs/images/warroom.png" alt="War Room tab — agent reports and Portfolio Manager final card" width="860">
+</p>
+
+Streams the Technical Analyst, Fundamentalist, Bear and Portfolio Manager reports in real time, or replays a past debate frame-by-frame. Each agent's structured output (thesis, confidence, catalysts, risks, cited sources) is rendered in its own card; the PM card carries the final action, confidence, and suggested weight.
+
+### Microstructure -- per-ticker forecast uncertainty
+<p align="center">
+  <img src="docs/images/microstructure.png" alt="Microstructure tab — PatchTST fan chart with quantile bands and P(up) card" width="860">
+</p>
+
+Renders PatchTST's 5-quantile forecast as a fan chart (80% / 50% / median / 50% / 20% bands) around the last-close reference line, together with a continuous **P(up)** card derived by CDF interpolation of the quantile outputs -- not a discrete count of positive quantiles.
 
 ---
 
@@ -350,6 +386,22 @@ All tests use mocks for external dependencies (APIs, databases, LLMs). No real A
 
 ---
 
+## Development Workflow -- Claude Code Subagents
+
+The repository ships five versioned **Claude Code subagents** under [`.claude/agents/`](.claude/agents/) that enforce the same review pipeline across anyone who forks the project. They are not runtime components -- they are reviewers and generators that Claude delegates to during development, each tuned against concrete incidents from the session history (look-ahead bias, overfitted champions, thread-unsafe `yfinance`, stale docs, missing tests).
+
+| Agent | Invoked when |
+|---|---|
+| **architect** | Before any new module, class, or cross-system integration is written. Validates structure, proposes public signatures first, guards the sacred folder layout. |
+| **quant-reviewer** | Mandatory after any change to model, backtest, or feature engineering code. Checks for look-ahead bias, proper DSR application, geometric `rf` conversion, transaction-cost integrity. |
+| **security-data** | After any data-pipeline script. Enforces `yf.Ticker().history()` (not the thread-unsafe `yf.download()`), explicit SPY inclusion, no real keys in `.env` diffs, OHLCV schema validation. |
+| **test-writer** | After any new function or class in `src/`. Writes `pytest` with Polars fixtures, zero real API calls, target coverage >=80% (>=70% for LangGraph-heavy modules). |
+| **docs-writer** | At the end of each module or phase. Enforces metric hygiene (never the old look-ahead Sharpe ~2.7; always report Sharpe + CAGR + MaxDD + Beta together). |
+
+See [`.claude/README.md`](.claude/README.md) for the full workflow diagram and a fork-adaptation guide.
+
+---
+
 ## Tech Stack
 
 | Layer | Technology | Purpose |
@@ -380,8 +432,24 @@ All tests use mocks for external dependencies (APIs, databases, LLMs). No real A
 
 - **Backtest-production gap:** The walk-forward benchmark validates NaiveModelFactory (sigmoid momentum) and PatchTST (with model caching). The multi-agent debate pipeline has not yet been backtested with the corrected temporal discipline. See [design gap analysis](docs/design_gap_backtest_vs_production.md).
 - **Agent fallback:** When LangGraph agents are unavailable, the decision engine falls back to PatchTST `prob_up` from `predictions.parquet` with **percentile-based classification** (bottom 15% SELL, 15-40% HOLD, top 60% BUY). If predictions are also unavailable, all tickers default to BUY with uniform confidence (0.5).
-- **CPCV-OOS acceptance:** Grid search across 547 configs (3 tiers) found 0 DSR-accepted configurations when penalised for multiple testing. A **holdout temporal validation** approach (`--holdout`) addresses this: the champion is tested on a reserved 2-year period the grid search never sees, with `n_trials=1` (no multiple-testing penalty). The current champion (rb=15, vol_target=10%, max_weight=6%, Ward+Ledoit-Wolf) achieved Sharpe 0.710 in the full walk-forward benchmark. See [data/outputs/validation_3tier_analysis.md](data/outputs/validation_3tier_analysis.md) for the complete analysis.
+- **CPCV-OOS acceptance:** Grid search across 547 configs (3 tiers) found 0 DSR-accepted configurations when penalised for multiple testing. A **holdout temporal validation** approach (`--holdout`) addresses this: the champion is tested on a reserved 2-year period the grid search never sees, with `n_trials=1` (no multiple-testing penalty). The current champion (rb=15, vol_target=10%, max_weight=min(6%, 2/N), Ward+Ledoit-Wolf) achieved Sharpe 0.766 over 10 years of walk-forward equity. See [data/outputs/validation_3tier_analysis.md](data/outputs/validation_3tier_analysis.md) for the complete analysis.
+- **Stochastic debate:** `make decide` is non-deterministic. Analyst agents run at `temperature=0.2` and the Portfolio Manager at `temperature=0.1`, so borderline tickers (confidence near the `MIN_CONFIDENCE_FOR_ACTION=0.3` gate) can oscillate between BUY and HOLD across reruns. A given `decisions.json` is a **single snapshot** of one run, not an average -- tickers with strong signal (e.g. clear uptrend + aligned news) reproduce consistently, borderline tickers do not. For stable production use, either run the debate multiple times and average, or lower the temperature to 0. The Live Debate panel in the War Room is intended for inspecting robustness on specific tickers.
+- **RAG grounding depends on news coverage:** The Fundamentalist cites articles it finds in ChromaDB. With sparse ticker-level coverage (e.g. 1-3 articles on a given name), the agent will produce ungrounded reports -- `sources_cited=[]`. The grounding rate in the current run (14/52 = 26.9%) is bounded by the 172-article ChromaDB snapshot used to bootstrap the demo; a production RAG refreshed nightly with `make ingest` targets ~5 articles per ticker to keep grounded coverage above 70%.
 - **No short selling:** The system only goes long or flat (no short positions).
+
+---
+
+## Citations
+
+The system rests on the following peer-reviewed papers and libraries. If you find this project useful for academic work, please cite both Titanium Alpha and the underlying methods it implements.
+
+- **Hierarchical Risk Parity** -- Lopez de Prado, M. (2016). *Building Diversified Portfolios that Outperform Out of Sample*. Journal of Portfolio Management, 42(4), 59-69. Implemented in [`src/portfolio/hrp.py`](src/portfolio/hrp.py).
+- **Combinatorial Purged Cross-Validation** -- Lopez de Prado, M. (2018). *Advances in Financial Machine Learning*. Wiley. Chapters 7 and 12. Implemented in [`src/backtest/cpcv.py`](src/backtest/cpcv.py).
+- **Deflated Sharpe Ratio** -- Bailey, D. H., & Lopez de Prado, M. (2014). *The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting, and Non-Normality*. Journal of Portfolio Management, 40(5), 94-107. Implemented in [`src/backtest/cpcv_oos.py`](src/backtest/cpcv_oos.py).
+- **PatchTST** -- Nie, Y., Nguyen, N. H., Sinthong, P., & Kalagnanam, J. (2023). *A Time Series is Worth 64 Words: Long-term Forecasting with Transformers*. ICLR 2023. Used via [NeuralForecast](https://nixtlaverse.nixtla.io/neuralforecast/); wrapped in [`src/models/patchtst_model.py`](src/models/patchtst_model.py).
+- **Ledoit-Wolf Covariance Shrinkage** -- Ledoit, O., & Wolf, M. (2004). *A Well-Conditioned Estimator for Large-Dimensional Covariance Matrices*. Journal of Multivariate Analysis, 88(2), 365-411. Used via `sklearn.covariance.LedoitWolf` inside [`src/portfolio/hrp.py`](src/portfolio/hrp.py).
+- **CDF Rearrangement for monotonic quantile forecasts** -- Chernozhukov, V., Fernandez-Val, I., & Galichon, A. (2010). *Quantile and Probability Curves Without Crossing*. Econometrica, 78(3), 1093-1125. Implemented in [`src/models/patchtst_model.py::_rearrange_quantiles`](src/models/patchtst_model.py).
+- **Sentence Embeddings for financial RAG** -- Reimers, N., & Gurevych, I. (2019). *Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks*. EMNLP 2019. Model `all-MiniLM-L6-v2` used in [`src/agents/rag.py`](src/agents/rag.py).
 
 ---
 

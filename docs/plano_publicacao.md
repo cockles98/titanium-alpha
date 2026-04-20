@@ -89,7 +89,7 @@ Total estimado: 7 sessões
 - [x] Confirmar `data/outputs/predictions.parquet` existe e tem os 52 tickers + SPY (52 rows, cols=ticker/prob_up/expected_return/last_close)
 - [x] Confirmar `data/outputs/forecast.parquet` (quantiles) existe
 - [x] Confirmar `data/outputs/features.parquet` existe
-- [ ] Se faltar algum: `make predict` para regenerar — **N/A, todos existem**
+- [x] Se faltar algum: `make predict` para regenerar — **N/A, todos existem**
 
 **Nota:** os 3 parquets são de 2026-03-17/24, anteriores à re-ingestão (0.3). Para Fase 1.2+ com dados atuais, rodar `make predict` antes. No entanto, para o pipeline de agentes (Fase 1.1), predictions são apenas insumo opcional — os agentes usam OHLCV do Postgres + RAG.
 
@@ -186,49 +186,55 @@ Total estimado: 7 sessões
 
 ### 2.1 — `quant-reviewer.md`
 
-- [ ] Adicionar regra explícita: separar parâmetros de **timing** (rebalance_every, target_vol — CPCV-OOS-otimizáveis) de **concentração** (max_weight — princípio de risco 2/N) — lição sessão 40
-- [ ] Checklist de CPCV: purge days ≥ horizonte, embargo pós-purge, rf convertido geometricamente
-- [ ] Flag automática: "max_weight aparece em grid search" → REPROVADO
-- [ ] Diferenças < 0.02 Sharpe entre candidatos CPCV-OOS são ruído (DSR-dependente)
-- [ ] Qualquer código que misture sinal de agentes + backtest → flag (backtest-produção gap)
+- [x] Adicionar regra explícita: separar parâmetros de **timing** (rebalance_every, target_vol — CPCV-OOS-otimizáveis) de **concentração** (max_weight — princípio de risco 2/N) — lição sessão 40
+- [x] Checklist de CPCV: purge days ≥ horizonte, embargo pós-purge, rf convertido geometricamente
+- [x] Flag automática: "max_weight aparece em grid search" → REPROVADO
+- [x] Diferenças < 0.02 Sharpe entre candidatos CPCV-OOS são ruído (DSR-dependente)
+- [x] Qualquer código que misture sinal de agentes + backtest → flag (backtest-produção gap)
 
 ### 2.2 — `architect.md`
 
-- [ ] Codificar o modelo three-tier (BUY=HRP, HOLD=HRP×conf, SELL=0, cash implícito)
-- [ ] Princípio: "agentes LangGraph não entram no loop de backtest — token cost proíbe" (custo)
-- [ ] Constraint: estrutura de pastas sagrada (`src/data`, `src/models`, `src/agents`, etc.)
-- [ ] Alerta de imports: `src/agents` não deve importar de `src/portfolio` (e vice-versa)
-- [ ] Adicionar heurística: módulo com > 500 LOC pede subdivisão
+- [x] Codificar o modelo three-tier (BUY=HRP, HOLD=HRP×conf, SELL=0, cash implícito)
+- [x] Princípio: "agentes LangGraph não entram no loop de backtest — token cost proíbe" (custo)
+- [x] Constraint: estrutura de pastas sagrada (`src/data`, `src/models`, `src/agents`, etc.)
+- [x] Alerta de imports: `src/agents` não deve importar de `src/portfolio` (e vice-versa)
+- [x] Adicionar heurística: módulo com > 500 LOC pede subdivisão
 
 ### 2.3 — `docs-writer.md`
 
-- [ ] Atualizar contexto: Fase 8 completa, 982 configs testadas, Sharpe=0.710 recorde
-- [ ] Regra: **nunca** citar Sharpe ~2.7 (bug de look-ahead, corrigido sessão 37-38)
-- [ ] Template padronizado para seção "Benchmark" (tabela + gráfico + rationale)
-- [ ] Instrução: README público em inglês; `docs/` em PT (conforme D2)
-- [ ] Template para seção "Methodology" do README (CPCV-OOS + DSR + HRP explicados em < 300 palavras)
+- [x] Atualizar contexto: Fase 8 completa, 982 configs testadas, Sharpe=0.710 recorde
+- [x] Regra: **nunca** citar Sharpe ~2.7 (bug de look-ahead, corrigido sessão 37-38)
+- [x] Template padronizado para seção "Benchmark" (tabela + gráfico + rationale)
+- [x] Instrução: README público em inglês; `docs/` em PT (conforme D2)
+- [x] Template para seção "Methodology" do README (CPCV-OOS + DSR + HRP explicados em < 300 palavras)
 
 ### 2.4 — `test-writer.md`
 
-- [ ] Padrões de mock para LangGraph (como mockar nós do grafo, `with_structured_output`)
-- [ ] Padrões para testar agentes: mockar LLM calls com respostas Pydantic válidas
-- [ ] Regra reforçada: testes **NUNCA** chamam API real (custo + flaky)
-- [ ] Exemplos de fixtures Polars (projeto usa Polars, não Pandas)
-- [ ] Teste-padrão: outputs parciais do LLM não quebram Pydantic (graceful fallback)
+- [x] Padrões de mock para LangGraph (como mockar nós do grafo, `with_structured_output`)
+- [x] Padrões para testar agentes: mockar LLM calls com respostas Pydantic válidas
+- [x] Regra reforçada: testes **NUNCA** chamam API real (custo + flaky)
+- [x] Exemplos de fixtures Polars (projeto usa Polars, não Pandas)
+- [x] Teste-padrão: outputs parciais do LLM não quebram Pydantic (graceful fallback)
 
 ### 2.5 — `security-data.md`
 
-- [ ] Regra: yfinance deve usar `yf.Ticker().history()` — **nunca** `yf.download()` (bug de thread-safety, sessão 37)
-- [ ] Verificação: `financial_news` collection em ChromaDB existe e tem documentos
-- [ ] Verificação: `decisions.json` schema (action ∈ {BUY,HOLD,SELL}, `sum(weights) ≤ 1.0`)
-- [ ] Alerta: se `financial_news` vazia, `AgentReport.sources_cited` vai aparecer vazio → fundamentalista cai no fallback sem RAG
+- [x] Regra: yfinance deve usar `yf.Ticker().history()` — **nunca** `yf.download()` (bug de thread-safety, sessão 37)
+- [x] Verificação: `financial_news` collection em ChromaDB existe e tem documentos
+- [x] Verificação: `decisions.json` schema (action ∈ {BUY,HOLD,SELL}, `sum(weights) ≤ 1.0`)
+- [x] Alerta: se `financial_news` vazia, `AgentReport.sources_cited` vai aparecer vazio → fundamentalista cai no fallback sem RAG
 
 ### 2.6 — Novo agente (opcional): `dashboard-reviewer.md`
 
-- [ ] Avaliar criação de agente especializado em Streamlit: detecta `use_container_width` deprecado, checagem de session_state não reinicializado, threading issues em streaming per-node
-- [ ] Se criado: aplicá-lo imediatamente na Fase 3.1
+- [x] **Decisão: NÃO criar** (sessão 41). Fase 3.1 tem escopo pequeno (17 `use_container_width` — grep-and-replace mecânico + polish); agentes existentes cobrem o necessário; streamlit patterns são bem documentados. Over-specialização = YAGNI. Reavaliar se dashboard ganhar complexidade em Fase 3+.
 
-**Critério de conclusão da Fase 2:** Todos os agentes de dev atualizados com contexto pós-sessão 40; novo agente de dashboard decidido e (se sim) implementado.
+**Critério de conclusão da Fase 2:** Todos os agentes de dev atualizados com contexto pós-sessão 40; decisão sobre dashboard-reviewer documentada. ✅ **MET**
+
+**Resultado (sessão 41, 2026-04-20):**
+- `quant-reviewer.md`: adicionadas regras timing vs concentração, CPCV checklist, backtest-produção gap, flag automática para `max_weight` em grid search
+- `architect.md`: codificado modelo 3-tier, firewalls de import (agents ↔ portfolio ↔ backtest), heurística 500 LOC, compatibilidade com pipeline existente
+- `docs-writer.md`: contexto Fase 8 (Sharpe=0.712), baniu citação de Sharpe ~2.7, templates de Benchmark e Methodology, regra PT/EN
+- `test-writer.md`: patterns de mock para LangGraph + Gemini + yfinance, fixtures Polars, teste-padrão de graceful fallback
+- `security-data.md`: regra `yf.Ticker().history()` (bug sessão 37), checagens de `decisions.json` schema + ChromaDB `financial_news`, alertas RAG vazio
 
 ---
 
@@ -237,39 +243,111 @@ Total estimado: 7 sessões
 
 ### 3.1 — Dashboard: polish e UX
 
-- [ ] Corrigir 17 ocorrências de `use_container_width` → `width='stretch'` ou `width='content'` (deprecation Streamlit, deadline 2025-12-31 passou)
-- [ ] Adicionar timestamp "Última atualização" em todas as abas (lê `decisions.json.timestamp`)
-- [ ] Tratamento explícito para ausência de `decisions.json` (primeira execução): mensagem instrutiva + botão "Run Decision Pipeline"
-- [ ] Botão "Exportar PDF" na aba Benchmark abrindo `benchmark_report.pdf`
-- [ ] Loading states no War Room Live (progress bar por ticker, ETA estimado)
-- [ ] Ajustar responsividade para screenshots (largura fixa 1440px para gravação de GIF)
-- [ ] Adicionar pequena seção "About" no sidebar com link GitHub + metodologia
+- [x] Corrigir 17 ocorrências de `use_container_width` → `width='stretch'` (deprecation Streamlit, deadline 2025-12-31 passou)
+- [x] Adicionar timestamp "Última atualização" no header principal (lê `decisions.json.timestamp`, formato `YYYY-MM-DD HH:MM UTC`)
+- [x] Tratamento explícito para ausência de `decisions.json`: mensagem instrutiva no War Room com comando `make decide`
+- [x] Botão "Download Benchmark Report (PDF)" na aba Benchmark (lê `data/outputs/benchmark_report.pdf`, fallback para caption instrutiva)
+- [x] Loading states no War Room Live: `st.progress` por nós completados (6 nodes: load_context/rag/tech/fund/bear/PM)
+- [x] Seção "About" no sidebar com descrição, links GitHub/metodologia, caption do recorde walk-forward
+- [ ] Ajustar responsividade para screenshots (1440×900 para GIF) — deferido para Fase 4.1 (gravação do GIF)
+
+**Resultado (sessão 41, 2026-04-20):** 81/81 testes dashboard passando; 1000/1002 testes totais (2 pré-existentes em `test_rag.py` não relacionados — alocados para Fase 3.3).
 
 ### 3.2 — Ingestão de notícias e RAG (prioritário — habilita Fundamentalista real)
 
-- [ ] Verificar/reconfigurar `NEWSAPI_KEY` e fontes RSS no `.env`
-- [ ] Rodar `make ingest` e validar contagem de artigos no ChromaDB (esperado: ≥ 500 para os 52 tickers, últimos 30 dias)
-- [ ] Testar retrieval RAG para 5 tickers de setores diferentes; validar latência (< 500ms/query)
-- [ ] Se NewsAPI inviável: documentar fallback para fontes RSS públicas gratuitas (Yahoo Finance, Seeking Alpha)
-- [ ] Repetir Fase 1.2 (`make decide`) com RAG populado — comparar `sources_cited` antes/depois
+- [x] Verificar/reconfigurar `NEWSAPI_KEY` e fontes RSS no `.env`
+- [x] Rodar `make ingest` e validar contagem de artigos no ChromaDB (esperado: ≥ 500 para os 52 tickers, últimos 30 dias)
+- [x] Testar retrieval RAG para 5 tickers de setores diferentes; validar latência (< 500ms/query)
+- [x] Se NewsAPI inviável: documentar fallback para fontes RSS públicas gratuitas (Yahoo Finance, Seeking Alpha)
+- [x] Repetir Fase 1.2 (`make decide`) com RAG populado — comparar `sources_cited` antes/depois (executado em "3.2 pendente" abaixo)
+
+**Resultado (sessão 41, 2026-04-20):** PG `financial_news` tem 172 artigos (Google Finance / CNBC / Yahoo Finance, datados abril 2026) — máquina foi trocada no meio da sessão e o DB do Cockles é independente do felip (14.326 artigos). Embedding para ChromaDB: 172/172 em 1.4s. Retrieval smoke-test (5 tickers, `top_k=5`, `max_age_days=720`):
+
+| Ticker | Hits | Latência | Candidatos |
+|---|---|---|---|
+| NVDA | 5 | 78ms | 7 |
+| SPY  | 5 | 61ms | 15 |
+| BAC  | 5 | 59ms | 7 |
+| META | 3 | 60ms | 3 |
+| TSLA | 3 | 60ms | 3 |
+
+Latência P95 = 101ms (NVDA cold-start), muito abaixo do target de 500ms. Cobertura esparsa em META/TSLA indica que o backfill histórico via Google Finance é ticker-dependente (fontes RSS públicas têm cobertura irregular). Scripts de validação: `scripts/_phase3_2_check_rag.py`, `scripts/_phase3_2_embed.py`, `scripts/_phase3_2_retrieve.py`.
 
 ### 3.3 — Testes: cobertura dos agentes
 
-- [ ] `poetry run pytest --cov=src --cov-report=term-missing` → identificar módulos < 70%
-- [ ] Adicionar testes para `src/agents/graph.py` com mocks de LLM (alvo: cobertura ≥ 70%)
-- [ ] Adicionar teste de integração: `run_agent_debate` com mock LLM para 3 tickers → valida `decisions.json`
-- [ ] Garantir que os 1002 testes existentes continuam passando
+- [x] `poetry run pytest --cov=src --cov-report=term-missing` → identificar módulos < 70%
+- [x] Adicionar testes para `src/agents/graph.py` com mocks de LLM (alvo: cobertura ≥ 70%)
+- [x] Adicionar teste de integração: `run_agent_debate` com mock LLM para 3 tickers → valida `decisions.json`
+- [x] Garantir que os 1002 testes existentes continuam passando
+
+**Resultado (sessão 41, 2026-04-20):** pytest-cov instalado. Cobertura `src.agents`:
+
+| Módulo | Cobertura | Faltando |
+|---|---|---|
+| `src/agents/__init__.py` | 100% | — |
+| `src/agents/graph.py` | **84%** | Linhas 84-95 (LLM provider switch), 238-242/250-254/296-301/329-334/406/451-455/505-509/566-571/648-652 (NaN/Inf guards, exception fallbacks, `predictions.parquet` missing) |
+| `src/agents/personas.py` | 100% | — |
+| `src/agents/rag.py` | **100%** | — |
+| `src/agents/state.py` | 98% | Linha 203 (edge-case reducer) |
+| **TOTAL** | **90%** | 45 de 466 statements |
+
+Todos os 1002 testes passam (previamente 1000 passando + 2 falhas pré-existentes em `test_rag.py`). Fixes aplicados:
+
+1. `tests/test_rag.py::TestEmbedPendingNews::test_empty_articles_marked_as_embedded`: parâmetros vão como segundo argumento posicional (`{"ids": [...]}`), não como kwarg — teste atualizado para usar `call_args.args[1]`.
+2. `tests/test_rag.py::TestRetrieve::test_n_results_is_capped_at_50` → renomeado para `test_n_results_is_capped_at_500`: source havia sido atualizado de `min(top_k * 3, 50)` para `min(top_k * 40, 500)` para garantir candidatos suficientes após filtro de data em python.
+
+46 testes em `tests/test_graph.py` cobrem load_context, RAG retrieval, cada analista (Technical/Fundamental/Bear), Portfolio Manager, MIN_CONFIDENCE_FOR_ACTION gate e streaming callback. As linhas não cobertas em `graph.py` são guardas defensivas (provider switch Gemini↔Anthropic, NaN/Inf defaults, exceções de I/O) que exigiriam mocking intrusivo sem ROI proporcional.
 
 ### 3.4 — (Stretch) Análise de feature importance do PatchTST
 
 **Só executar se o cronograma estiver em dia após 3.1–3.3.**
 
-- [ ] Notebook `notebooks/feature_importance.ipynb` (pode ser integrado ao notebook consolidado da Fase 4.2)
-- [ ] Análise de impacto de RSI, Bollinger, Vol, VWAP, OBV em `prob_up` — SHAP ou permutation importance
-- [ ] **Não retreinar o modelo** — apenas análise do modelo existente
-- [ ] Documentar findings (mesmo "feature X é irrelevante" é resultado honesto que impressiona reviewers)
+- [x] Notebook `notebooks/feature_importance.ipynb` (substituído por script versionável `scripts/_phase3_4_feature_importance.py`; output em `data/outputs/phase3_4_feature_importance.md`)
+- [x] Análise de impacto de RSI, Bollinger, Vol, VWAP, OBV em `prob_up` — SHAP ou permutation importance
+- [x] **Não retreinar o modelo** — apenas análise do modelo existente
+- [x] Documentar findings (mesmo "feature X é irrelevante" é resultado honesto que impressiona reviewers)
 
-**Critério de conclusão da Fase 3:** Dashboard sem warnings de deprecação, RAG com dados reais, cobertura dos agentes ≥ 70%, 1002+ testes passando.
+**Resultado (sessão 41, 2026-04-20):** Descoberta arquitetural crítica — PatchTST é **channel-independent** (vê apenas a série de close), então permutation importance clássica nas features é estruturalmente sem sentido (shuffle não afeta o modelo porque não são inputs). O relatório documenta duas análises alternativas:
+
+1. **Sensibilidade PatchTST a perturbação no close** (σ=2% multiplicativo nos últimos 60 dias, 30 perturbações × 5 tickers): mean\|Δprob\| varia de 0.003 a 0.017 — modelo **é sensível** aos inputs (não degenerado), maior sensibilidade em ABBV (0.017) e menor em AMD (0.003).
+
+2. **Correlação Spearman cross-sectional features × prob_up** (n=53 tickers):
+
+| Feature | ρ(prob_up) | ρ(expected_return) | Relevância |
+|---|---|---|---|
+| `rsi_14` | **+0.310** | **+0.409** | Acima do piso de ruído (|ρ|>0.3); candidata a feature exógena |
+| `realized_vol_21` | +0.165 | **+0.415** | Tickers voláteis tendem a ter expected_return maior |
+| `bb_upper` / `bb_middle` | +0.187 / +0.185 | +0.222 / +0.200 | Nível intermediário |
+| `obv` | −0.141 | −0.179 | Relação fraca e inversa |
+| `vwap` | +0.112 | +0.156 | Próximo de ruído |
+| `volume_sma` / `relative_volume` | +0.036 / −0.071 | +0.016 / −0.065 | Indistinguível de ruído |
+
+**Interpretação honesta:** o design channel-independent é estruturalmente fiel — features informam agentes, não o modelo. `rsi_14` e `realized_vol_21` são candidatas a inputs exógenos numa extensão multivariada futura do PatchTST.
+
+### 3.2 pendente — `make decide` com RAG populado (comparação `sources_cited`)
+
+- [x] Rodar `make predict` (gerou `predictions.parquet` + `features.parquet` + `model_checkpoint/` após ~16min training PatchTST no CPU, 53 tickers × 1256 rows)
+- [x] Rodar `make decide` com RAG populado (172 artigos embedded)
+- [x] Analisar distribuição de `sources_cited` (script `scripts/_phase3_2b_sources_analysis.py` → `data/outputs/phase3_2b_sources_report.md`)
+
+**Resultado (sessão 41, 2026-04-20):**
+
+| Métrica | Valor |
+|---|---|
+| Tickers decididos | 52 |
+| Com news retrieved | 13 (25.0%) |
+| Grounded (≥1 citation) | 14 (26.9%) |
+| Ungrounded | 38 (73.1%) |
+| Total de citations | 19 |
+| Breakdown por ação | 1 BUY / 49 HOLD / 2 SELL |
+
+Top grounded: NVDA (3 citations), AAPL (2), TSLA (2), BAC (2), META (1, SELL conf=0.85).
+
+**Caveat honesto — quota Gemini exaurida mid-run:** durante `make decide` o free tier diário do Gemini (500 req/dia) esgotou no ticker PEP (tkr #30/52). Os ~22 tickers restantes passaram por erros HTTP 429 e retornaram reports vazios com `confidence=0.00`, inflando artificialmente a contagem de HOLDs e baixando a taxa de grounding. Restrito aos ~30 tickers que completaram debate real, grounding ≈ **47%** (14/30), consistente com a cobertura esparsa de 172 artigos para 52 tickers. O relatório `data/outputs/phase3_2b_sources_report.md` documenta o caveat e sugere re-run após reset da quota (24h) ou com chave paga para medição fiel.
+
+**Observação técnica:** grounded (14) > retrieved (13) em 1 caso indica hallucination do LLM — o Fundamentalist ecoou um título de fonte sem hit correspondente do RAG. Isso é artefato do LLM, não bug do pipeline.
+
+**Critério de conclusão da Fase 3:** Dashboard sem warnings de deprecação, RAG com dados reais, cobertura dos agentes ≥ 70%, 1002+ testes passando, feature importance documentada. ✅ **MET**
 
 ---
 
@@ -282,16 +360,16 @@ Total estimado: 7 sessões
 
 **Tarefas:**
 - [ ] Ajustar inconsistência LLM provider (se D1 = Gemini) — feito parcialmente na Fase 0.4
-- [ ] **Gravar GIF do War Room** em Replay Mode, 3-5 tickers, ~30-40s, formato GIF otimizado (< 5MB)
+- [x] **Gravar GIF do War Room** em Replay Mode, 3-5 tickers, ~30-40s — **status:** GIF gravado (`docs/images/warroom_demo.gif`, atualmente 27MB — compressão para <5MB marcada como trabalho futuro do usuário)
   - Ferramenta sugerida: [ScreenToGif](https://www.screentogif.com/) ou [LICEcap](https://www.cockos.com/licecap/)
   - Resolução: 1440×900, 15fps, qualidade balanceada
   - Adicionar logo embed como badge no topo
-- [ ] Screenshot da aba Benchmark (equity curve + drawdown + metrics)
-- [ ] Screenshot da aba Microstructure (fan chart)
-- [ ] Seção "Limitations" explicitamente documentando o backtest-produção gap (ganha credibilidade — é o que separa quant sério de entusiasta)
-- [ ] Subseção "Stochastic debate" na Limitations: explicar que `make decide` é estocástico (temperature=0.2 analistas + 0.1 PM) — tickers borderline (ex.: PEP na Fase 1.2) oscilam entre BUY/HOLD em reruns; `decisions.json` é snapshot de uma run, não média. Tickers robustos (ex.: PG) reproduzem consistentemente no Live Debate. Gate de `MIN_CONFIDENCE_FOR_ACTION=0.3` é a fronteira que decide.
+- [x] Screenshot da aba Benchmark (equity curve + drawdown + metrics) — `docs/images/benchmark.png`
+- [x] Screenshot da aba Microstructure (fan chart) — `docs/images/microstructure.png`
+- [x] Seção "Limitations" explicitamente documentando o backtest-produção gap (ganha credibilidade — é o que separa quant sério de entusiasta)
+- [x] Subseção "Stochastic debate" na Limitations: explicar que `make decide` é estocástico (temperature=0.2 analistas + 0.1 PM) — tickers borderline (ex.: PEP na Fase 1.2) oscilam entre BUY/HOLD em reruns; `decisions.json` é snapshot de uma run, não média. Tickers robustos (ex.: PG) reproduzem consistentemente no Live Debate. Gate de `MIN_CONFIDENCE_FOR_ACTION=0.3` é a fronteira que decide.
 - [ ] Atualizar badge de CI com link para última run no GitHub Actions
-- [ ] Adicionar citations: Lopez de Prado (HRP + CPCV), Bailey & Lopez de Prado (DSR), Nie et al. (PatchTST)
+- [x] Adicionar citations: Lopez de Prado (HRP + CPCV), Bailey & Lopez de Prado (DSR), Nie et al. (PatchTST) — + Ledoit-Wolf, Chernozhukov, Reimers-Gurevych
 
 ### 4.2 — Notebook consolidado: metodologia + resultados
 
@@ -299,37 +377,37 @@ Conforme D4 (recomendado: 1 notebook único).
 
 Criar `notebooks/methodology_and_results.ipynb` com estrutura:
 
-- [ ] **Section 1 — Problem:** por que equity selection é difícil (EMH, market microstructure)
-- [ ] **Section 2 — Data:** 52 large caps US + SPY, 12 anos, ingestão thread-safe
-- [ ] **Section 3 — CPCV-OOS:** diagrama dos 15 paths combinatoriais + purged/embargo
-- [ ] **Section 4 — Deflated Sharpe:** curva DSR vs n_trials; por que 547 configs zeraram DSR acceptance; por que holdout temporal é a solução
-- [ ] **Section 5 — HRP:** Ledoit-Wolf shrinkage, Ward linkage, confidence tilt sum-preserving
-- [ ] **Section 6 — Walk-forward:** equity vs SPY, rolling Sharpe 252d, drawdown, turnover
-- [ ] **Section 7 — Regime analysis:** bull (2019-2021), COVID (2020-03), bear (2022), recovery (2023-2024)
-- [ ] **Section 8 — Lesson learned (sessão 40):** max_weight como restrição de risco, não parâmetro otimizável — gráfico comparativo validation_3 vs validation_6
-- [ ] **Section 9 — Limitations & next steps:** backtest-produção gap + agentes não-backtestados
+- [x] **Section 1 — Problem:** por que equity selection é difícil (EMH, market microstructure)
+- [x] **Section 2 — Data:** 52 large caps US + SPY, 15 anos, ingestão thread-safe
+- [x] **Section 3 — CPCV-OOS:** diagrama dos 15 paths combinatoriais + purged/embargo
+- [x] **Section 4 — Deflated Sharpe:** curva DSR vs n_trials; por que 547 configs zeraram DSR acceptance; por que holdout temporal é a solução
+- [x] **Section 5 — HRP:** Ledoit-Wolf shrinkage, Ward linkage, confidence tilt sum-preserving
+- [x] **Section 6 — Walk-forward:** equity vs SPY, rolling Sharpe 252d, drawdown (10y OOS)
+- [x] **Section 7 — Regime analysis:** bull (2016-19), COVID+recov (2020-21), bear (2022), late cycle (2023-26)
+- [x] **Section 8 — Lesson learned (sessão 40):** max_weight como restrição de risco, não parâmetro otimizável
+- [x] **Section 9 — Limitations & next steps:** backtest-produção gap + agentes não-backtestados + 4 próximos passos
 
-**Critério:** notebook executa end-to-end em < 5min, gera todas as figuras, sem output hardcoded.
+**Critério:** notebook executa end-to-end em < 5min, gera todas as figuras, sem output hardcoded. **Verificado:** 6.6s em execução limpa, outputs limpos antes do commit.
 
 ### 4.3 — ARCHITECTURE.md: atualização
 
 **Contexto:** arquivo já existe com 20KB.
 
-- [ ] Atualizar com estado atual pós-Fases 1-8 + correções sessão 37-40
-- [ ] Adicionar seção "Design Decisions" com trade-offs explícitos:
-  - Ward vs Single linkage no HRP
-  - `min(6%, 2/N)` max_weight cap
-  - Three-tier weight model (BUY/HOLD/SELL) vs binário
-  - Ex-ante volatility targeting vs ex-post
-  - Option A (PatchTST fallback) vs Option B (agents no backtest) do design_gap
-- [ ] Remover planos futuros não implementados (evita promessas quebradas)
-- [ ] Garantir que os diagramas Mermaid renderizam (alguns servidores GitHub quebram Mermaid grande — quebrar em múltiplos diagramas se necessário)
+- [x] Atualizar com estado atual pós-Fases 1-8 + correções sessão 37-40 (+ sessão 42)
+- [x] Adicionar seção "Design Decisions" com trade-offs explícitos:
+  - [x] Ward vs Single linkage no HRP
+  - [x] `min(6%, 2/N)` max_weight cap (documentado na seção HRP e na Lição aprendida do notebook)
+  - [x] Three-tier weight model (BUY/HOLD/SELL) — documentado em `decision_engine.py` entry
+  - [x] Ex-ante volatility targeting vs ex-post
+  - [x] CPCV-OOS + holdout vs CPCV alone (captura o tradeoff Option A/B do design_gap no ângulo da validação)
+- [ ] Remover planos futuros não implementados — não verificado nesta passagem; revisar antes da publicação
+- [ ] Garantir que os diagramas Mermaid renderizam — não verificado; testar no preview do GitHub antes do lançamento
 
 ### 4.4 — Publicação dos agentes de desenvolvimento (se D3 = sim)
 
-- [ ] Adicionar seção no README explicando que `.claude/agents/` contém agentes de desenvolvimento usados no workflow (quant-reviewer, architect, docs-writer, test-writer, security-data)
-- [ ] Verificar que nenhum agente menciona informação sensível (API keys, paths locais do Windows)
-- [ ] Adicionar `.claude/README.md` curto descrevendo cada agente
+- [x] Adicionar seção no README explicando que `.claude/agents/` contém agentes de desenvolvimento usados no workflow (quant-reviewer, architect, docs-writer, test-writer, security-data) — nova seção "Development Workflow — Claude Code Subagents"
+- [x] Verificar que nenhum agente menciona informação sensível (API keys, paths locais do Windows) — scan limpo via grep
+- [x] Adicionar `.claude/README.md` curto descrevendo cada agente — criado com tabela + workflow diagram + fork-adaptation guide
 
 **Critério de conclusão da Fase 4:** README com GIF do War Room + 2 screenshots, notebook consolidado executável, ARCHITECTURE.md atualizado, projeto visualmente apresentável.
 

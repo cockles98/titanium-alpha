@@ -398,7 +398,7 @@ class MarketDataIngester:
 
 
 if __name__ == "__main__":
-    ingester = MarketDataIngester(years=12)
+    ingester = MarketDataIngester(years=15)
     result = ingester.run()
     logger.info("Result shape: {} rows x {} cols", result.height, result.width)
     logger.info("Tickers: {}", result["ticker"].unique().to_list())
