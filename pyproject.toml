@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
-    {name = "Felipe Cockles", email = "felipe.cockles@hotmail.com"}
+    {name = "Felipe Cockles", email = "cockles98@users.noreply.github.com"}
 ]
 keywords = [
     "quantitative-finance",
