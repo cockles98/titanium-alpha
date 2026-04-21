@@ -47,21 +47,21 @@ The result is an end-to-end system where every component -- from data ingestion 
 
 | Metric | Fine-Tuned (10y OOS) | SPY Buy-and-Hold |
 |---|---|---|
-| **Sharpe Ratio** | **0.766** | -- |
-| **CAGR** | 13.68% | ~14.9% |
+| **Sharpe Ratio** | **0.766** | 0.592 |
+| **CAGR** | 13.68% | 14.89% |
 | **Total Return** | 259.3% | 299.5% |
-| **Max Drawdown** | **-21.94%** | -- |
-| **Max DD Duration** | 361 days | -- |
-| **Sortino Ratio** | 1.058 | -- |
-| **Calmar Ratio** | 0.624 | -- |
+| **Max Drawdown** | **-21.94%** | -33.72% |
+| **Max DD Duration** | 361 days | 488 days |
+| **Sortino Ratio** | 1.058 | 0.826 |
+| **Calmar Ratio** | 0.624 | 0.442 |
 | **Alpha (CAPM)** | +2.57% | -- |
 | **Beta** | 0.566 | 1.0 |
-| **Ann. Volatility** | 11.19% | -- |
+| **Ann. Volatility** | 11.19% | 17.93% |
 | **Tracking Error** | 9.11% | -- |
 | **Avg Positions** | 52.0 | -- |
 | **Avg Annual Turnover** | 230% | -- |
 
-> **Note:** Walk-forward backtest over **10 years of out-of-sample equity** (2016-04-19 → 2026-04-17, 2514 trading days, 15 years of raw OHLCV with 3 years consumed as covariance warmup). Fine-tuned config (rb=15, vol_target=10%, max_weight=min(6%, 2/N)=3.85%, Ward+Ledoit-Wolf) was identified by a 3-tier CPCV-OOS grid search (547 configs). Volatility targeting at 10% annualized is the single biggest Sharpe driver. The strategy carries **~57% of the market beta** while generating **+2.57% Jensen's alpha**, producing a Sharpe of 0.766 vs SPY's 14.9% CAGR (lower absolute return, materially lower risk). Uses NaiveModelFactory on clean data (thread-safe `yf.Ticker().history()`) with 756-day covariance lookback and semi-annual retraining. The multi-agent debate layer has not yet been backtested. See [docs/design_gap_backtest_vs_production.md](docs/design_gap_backtest_vs_production.md) for details.
+> **Note:** Walk-forward backtest over **10 years of out-of-sample equity** (2016-04-19 → 2026-04-17, 2514 trading days, 15 years of raw OHLCV with 3 years consumed as covariance warmup). Fine-tuned config (rb=15, vol_target=10%, max_weight=min(6%, 2/N)=3.85%, Ward+Ledoit-Wolf) was identified by a 3-tier CPCV-OOS grid search (547 configs). Volatility targeting at 10% annualized is the single biggest Sharpe driver. The strategy carries **~57% of the market beta** while generating **+2.57% Jensen's alpha**, producing a Sharpe of **0.766 vs SPY's 0.592** — lower absolute return (13.68% CAGR vs 14.89%) but materially lower risk (11.19% ann. vol vs 17.93%, -21.94% max DD vs -33.72%). SPY metrics computed on the same equity curve with the same formula (`src/backtest/benchmark_metrics.py`). Uses NaiveModelFactory on clean data (thread-safe `yf.Ticker().history()`) with 756-day covariance lookback and semi-annual retraining. The multi-agent debate layer has not yet been backtested. See [docs/design_gap_backtest_vs_production.md](docs/design_gap_backtest_vs_production.md) for details.
 
 ---
 
