@@ -241,11 +241,6 @@ def _metric_color(key: str, value: float) -> str:
     }
     # Lower is better (less negative)
     lower_better = {"max_drawdown", "max_drawdown_duration_days"}
-    # Neutral
-    neutral = {
-        "beta", "annualized_volatility", "tracking_error",
-        "benchmark_total_return", "avg_annual_turnover", "avg_positions",
-    }
 
     if key in higher_better:
         return _ACCENT_GREEN if value > 0 else _ACCENT_RED
@@ -1255,6 +1250,7 @@ def tab_performance(
     has_bench = bench_weights is not None
 
     if has_decisions:
+        assert decisions is not None  # narrowed by has_decisions
         # Quality warnings
         quality_warnings = _detect_decision_quality(decisions)
         if quality_warnings:
@@ -1311,6 +1307,7 @@ def tab_performance(
 
     # --- Confidence distribution + action breakdown ---
     if has_decisions:
+        assert decisions is not None  # narrowed by has_decisions
         fig_conf = _chart_confidence_histogram(decisions)
         fig_action = _chart_action_distribution(decisions)
         if fig_conf or fig_action:
@@ -1332,6 +1329,7 @@ def tab_performance(
 
     # --- Decision table ---
     if has_decisions:
+        assert decisions is not None  # narrowed by has_decisions
         st.subheader("Decisions")
         _render_decision_table(decisions)
         cluster = decisions.get("cluster_order", [])
@@ -1558,6 +1556,7 @@ def tab_war_room(
 
     # --- Replay mode ---
     if replay_clicked and has_debate:
+        assert debate is not None  # narrowed by has_debate
         ticker_state = debate[selected]
         reports = ticker_state.get("reports", [])
         if reports:
@@ -1591,6 +1590,7 @@ def tab_war_room(
 
     # --- Static mode (default) ---
     if has_debate:
+        assert debate is not None  # narrowed by has_debate
         ticker_state = debate[selected]
         reports = ticker_state.get("reports", [])
 
@@ -1644,11 +1644,6 @@ def _render_live_debate() -> None:
     for event in events:
         if event[0] == "node":
             _, ticker, node_name, output = event
-            agent_key = _NODE_TO_AGENT.get(node_name, node_name)
-            style = AGENT_STYLES.get(
-                agent_key,
-                {"icon": "⚙️", "label": node_name, "color": "#888"},
-            )
 
             # Show node completion
             reports = output.get("reports", [])
@@ -1840,7 +1835,6 @@ def _render_prediction_card(pred: dict[str, Any], ticker: str) -> None:
     prob_up = pred.get("prob_up", 0.0)
     expected_ret = pred.get("expected_return", 0.0)
 
-    color = _ACCENT_GREEN if prob_up > 0.5 else _ACCENT_RED
     direction = "UP" if prob_up > 0.5 else "DOWN"
 
     col1, col2, col3 = st.columns(3)
@@ -1898,7 +1892,8 @@ def _chart_ticker_cumulative_return(
 ) -> go.Figure | None:
     """Line chart of a ticker's cumulative return vs portfolio vs benchmark."""
     try:
-        import polars as pl
+        # Availability probe: the function gracefully returns None when polars is unavailable.
+        import polars as pl  # noqa: F401
     except ImportError:
         return None
 
@@ -1925,7 +1920,7 @@ def _chart_ticker_cumulative_return(
 
     fig.update_layout(
         title=dict(
-            text=f"Cumulative Returns — Portfolio vs Benchmark",
+            text="Cumulative Returns — Portfolio vs Benchmark",
             font=dict(size=16, color=_TEXT),
         ),
         xaxis_title="Date",

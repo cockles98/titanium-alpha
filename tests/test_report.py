@@ -6,7 +6,6 @@ and edge cases with empty or minimal data.
 
 from __future__ import annotations
 
-from dataclasses import field
 from pathlib import Path
 
 import matplotlib
@@ -16,7 +15,6 @@ matplotlib.use("Agg")  # Non-interactive backend before any pyplot import
 
 from src.backtest.cpcv import BacktestResult, FoldResult
 from src.backtest.report import BacktestReport
-
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures

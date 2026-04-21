@@ -13,16 +13,15 @@ import pytest
 
 from src.agents.state import FinalDecision
 from src.portfolio.decision_engine import (
+    _DEFAULT_LOOKBACK_DAYS,
+    _PROB_UP_BUY,
+    _PROB_UP_SELL,
     ClassificationConfig,
     DecisionEngine,
     DecisionOutput,
     TickerDecision,
-    _DEFAULT_LOOKBACK_DAYS,
-    _PROB_UP_BUY,
-    _PROB_UP_SELL,
 )
 from src.portfolio.hrp import HRPConfig, HRPResult
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

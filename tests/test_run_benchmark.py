@@ -7,10 +7,9 @@ import random
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import polars as pl
-import pytest
 
 from src.backtest.run_benchmark import (
     _filter_oos_period,
@@ -24,7 +23,6 @@ from src.backtest.walk_forward import (
     WalkForwardConfig,
     WalkForwardResult,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

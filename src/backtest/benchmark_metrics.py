@@ -33,7 +33,6 @@ from loguru import logger
 
 from src.backtest.walk_forward import RebalanceRecord
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -68,16 +67,16 @@ def _compute_drawdown_series(cumulative: list[float]) -> list[float]:
     if not cumulative:
         return []
 
-    # O pico DEVE começar no capital inicial (1.0), caso contrário 
+    # O pico DEVE começar no capital inicial (1.0), caso contrário
     # ignoramos perdas que ocorram no exato primeiro dia do backtest.
-    peak = 1.0 
+    peak = 1.0
     dd: list[float] = []
-    
+
     for val in cumulative:
         if val > peak:
             peak = val
         dd.append((val - peak) / peak if peak != 0 else 0.0)
-        
+
     return dd
 
 
@@ -225,7 +224,7 @@ def compute_benchmark_metrics(
     # ---- Risk-adjusted metrics
     # Conversão geométrica da taxa livre de risco anual para diária
     rf_daily = (1.0 + rf) ** (1.0 / trading_days) - 1.0
-    
+
     excess_port = [r - rf_daily for r in port_ret]
     excess_bench = [r - rf_daily for r in bench_ret]
 
@@ -240,7 +239,7 @@ def compute_benchmark_metrics(
     # ---- Relative metrics (vs benchmark)
     active_ret = [p - b for p, b in zip(port_ret, bench_ret)]
     tracking_error = _std(active_ret) * math.sqrt(trading_days)
-    
+
     # Information Ratio: Retorno ativo anualizado dividido pelo Tracking Error
     annualized_active_return = (sum(active_ret) / n) * trading_days
     info_ratio = (

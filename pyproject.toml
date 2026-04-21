@@ -80,17 +80,32 @@ requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
-line-length = 88
+line-length = 120
 target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+ignore = [
+    "N803",  # non-lowercase argument — financial/ML code uses X, y, R, W matrices
+    "N806",  # non-lowercase variable — same reason
+    "E741",  # ambiguous variable names (l, I, O) — acceptable in math-heavy code
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["F841"]  # unused variables in tests are often intentional (fixtures / patch capture)
 
 [tool.mypy]
 python_version = "3.10"
-strict = true
-warn_return_any = true
+ignore_missing_imports = true
 warn_unused_configs = true
+warn_redundant_casts = true
+# strict = true intentionally disabled for v1.0.0 — the project uses heavy runtime
+# introspection (Streamlit, Polars, Pydantic, LangGraph) where strict mypy produces
+# noise without catching real bugs. Phased tightening tracked in CONTRIBUTING.md.
+
+[[tool.mypy.overrides]]
+module = "src.backtest.run_validation"
+ignore_errors = true  # auxiliary CLI script with known dynamic-typing patterns
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

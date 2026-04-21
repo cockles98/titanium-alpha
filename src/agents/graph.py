@@ -27,8 +27,9 @@ from __future__ import annotations
 import json
 import math
 import os
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import polars as pl
 from dotenv import load_dotenv
@@ -38,7 +39,9 @@ from loguru import logger
 
 load_dotenv()
 
-from src.agents.personas import (
+# Imports below must follow load_dotenv() so that env-dependent modules
+# (e.g. LLM client initialisation inside personas/state) see the loaded values.
+from src.agents.personas import (  # noqa: E402
     BEAR_AGENT,
     FUNDAMENTALIST_ANALYST,
     PORTFOLIO_MANAGER,
@@ -46,7 +49,7 @@ from src.agents.personas import (
     AgentReportModel,
     FinalDecisionModel,
 )
-from src.agents.state import (
+from src.agents.state import (  # noqa: E402
     MIN_CONFIDENCE_FOR_ACTION,
     AgentReport,
     FinalDecision,
@@ -92,7 +95,7 @@ def _create_llm(temperature: float) -> Any:
 
     from langchain_anthropic import ChatAnthropic
 
-    return ChatAnthropic(
+    return ChatAnthropic(  # type: ignore[call-arg]
         model=_DEFAULT_MODEL,
         temperature=temperature,
     )
@@ -177,7 +180,7 @@ def _format_news(news_context: list[str]) -> str:
     )
 
 
-def _format_debate_entry(agent_name: str, report: dict[str, Any]) -> str:
+def _format_debate_entry(agent_name: str, report: Mapping[str, Any]) -> str:
     """Create a structured debate log entry for the Streamlit dashboard.
 
     Args:
@@ -649,7 +652,7 @@ def portfolio_manager(state: InvestmentState) -> dict[str, Any]:
 
     except Exception as exc:
         logger.error("Portfolio Manager LLM failed for {}: {}", state["ticker"], exc)
-        decision: FinalDecision = {
+        decision = {
             "ticker": state["ticker"],
             "action": "HOLD",
             "confidence": 0.0,

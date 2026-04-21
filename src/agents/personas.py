@@ -20,7 +20,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
 # ┌─────────────────────────────────────────────────────────────────────────┐
 # │ Pydantic models for structured LLM output                             │
 # └─────────────────────────────────────────────────────────────────────────┘

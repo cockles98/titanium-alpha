@@ -37,7 +37,6 @@ from loguru import logger
 from scipy.cluster.hierarchy import linkage
 from scipy.spatial.distance import squareform
 
-
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -58,8 +57,8 @@ class HRPConfig:
             and lower turnover, especially when ``n_obs`` is close to
             ``n_assets``.
         confidence_tilt_cap: Maximum adjustment factor applied to raw
-            HRP weights based on agent confidence. The maximum tilt 
-            depends on the spread of confidences around their 
+            HRP weights based on agent confidence. The maximum tilt
+            depends on the spread of confidences around their
             cross-sectional mean.
         min_weight: Floor per asset after tilt (before renormalisation).
         max_weight: Cap per asset after tilt (before renormalisation).
@@ -423,13 +422,13 @@ class HRPOptimizer:
     # ------------------------------------------------------------------
 
     def _apply_constraints_and_normalise(
-        self, 
+        self,
         target_weights: dict[str, float],
         previous_weights: dict[str, float] | None = None
     ) -> dict[str, float]:
         """
         Otimizador unificado via Waterfilling com limites dinâmicos.
-        Garante soma = 1.0, respeita min/max_weight globais e aplica 
+        Garante soma = 1.0, respeita min/max_weight globais e aplica
         latching (inércia) travando os limites de ativos que não romperam o threshold.
         """
         tickers = list(target_weights.keys())
@@ -515,7 +514,7 @@ class HRPOptimizer:
             logger.debug("Post-waterfill adjust: deficit was {:.6f}", deficit)
 
         return w
-    
+
 
     # ------------------------------------------------------------------
     # Public API
@@ -598,8 +597,8 @@ class HRPOptimizer:
         idx_weights = self._recursive_bisection(cov, sorted_indices)
 
         raw_weights: dict[str, float] = {}
-        for idx, w in idx_weights.items():
-            raw_weights[tickers[idx]] = w
+        for idx, weight in idx_weights.items():
+            raw_weights[tickers[idx]] = weight
 
         # --- Step 6: Confidence tilt ---
         if confidences is not None:

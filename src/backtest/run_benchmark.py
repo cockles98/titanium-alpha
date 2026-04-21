@@ -19,14 +19,13 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 from loguru import logger
 
-from src.backtest.benchmark_metrics import compute_benchmark_metrics
 from src.backtest.benchmark_report import BenchmarkReport
 from src.backtest.cpcv import TransactionCosts
 from src.backtest.walk_forward import (
@@ -35,9 +34,8 @@ from src.backtest.walk_forward import (
     WalkForwardConfig,
     WalkForwardResult,
 )
+from src.config import load_ticker_config
 from src.portfolio.hrp import HRPConfig  # noqa: F401 — used by _PatchTSTModelFactory
-from src.config import load_benchmark, load_ticker_config, load_tickers
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -111,8 +109,10 @@ def _filter_oos_period(
     Returns:
         Filtered DataFrame.
     """
-    max_date = df["date"].max()
-    
+    # Polars' type stubs return a broad union for Series.max(); at runtime this is
+    # always a datetime.date because the column dtype is Date.
+    max_date = cast(date, df["date"].max())
+
     # Calcula o cutoff com segurança para anos bissextos (ex: 29 de fevereiro)
     try:
         cutoff = max_date.replace(year=max_date.year - n_years)
@@ -121,7 +121,7 @@ def _filter_oos_period(
         cutoff = max_date.replace(year=max_date.year - n_years, day=28)
 
     filtered = df.filter(pl.col("date") >= cutoff)
-    
+
     logger.info(
         "OOS filter: {} years | cutoff={} | {} → {} rows",
         n_years,
@@ -153,7 +153,8 @@ def _resolve_model_factory(use_patchtst: bool) -> Any:
 
     # Lazy import to avoid heavy deps when running in fast mode
     try:
-        from src.models.patchtst_model import TitaniumForecaster
+        # Availability probe: import raises ImportError if torch / neuralforecast are missing.
+        from src.models.patchtst_model import TitaniumForecaster  # noqa: F401
 
         logger.info("Using PatchTST model factory")
         return _PatchTSTModelFactory()

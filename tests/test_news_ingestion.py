@@ -9,20 +9,19 @@ from __future__ import annotations
 
 from datetime import date
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
 
 from src.data.news_ingestion import (
-    NewsIngester,
     _TICKER_COMPANY,
+    NewsIngester,
     _clean_html,
     _match_ticker,
     _parse_date,
     _truncate,
 )
-
 
 # ======================================================================
 # Fixtures
@@ -672,8 +671,18 @@ class TestFetchGdelt:
         resp.raise_for_status = MagicMock()
         resp.json.return_value = {
             "articles": [
-                {"title": "No URL article", "url": "", "seendate": "20240101T000000Z", "domain": "x.com"},
-                {"title": "Good article", "url": "https://example.com/good", "seendate": "20240101T000000Z", "domain": "y.com"},
+                {
+                    "title": "No URL article",
+                    "url": "",
+                    "seendate": "20240101T000000Z",
+                    "domain": "x.com",
+                },
+                {
+                    "title": "Good article",
+                    "url": "https://example.com/good",
+                    "seendate": "20240101T000000Z",
+                    "domain": "y.com",
+                },
             ]
         }
         mock_get.return_value = resp

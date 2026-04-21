@@ -23,7 +23,6 @@ Usage::
 from __future__ import annotations
 
 import math
-from datetime import date
 from pathlib import Path
 
 import matplotlib
@@ -32,7 +31,7 @@ import numpy as np
 from loguru import logger
 from matplotlib.backends.backend_pdf import PdfPages
 
-from src.backtest.walk_forward import RebalanceRecord, WalkForwardResult
+from src.backtest.walk_forward import WalkForwardResult
 
 matplotlib.use("Agg")  # Non-interactive backend for PDF generation
 

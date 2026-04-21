@@ -15,7 +15,7 @@ from pathlib import Path
 
 import feedparser
 import polars as pl
-import requests
+import requests  # type: ignore[import-untyped]
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from loguru import logger
@@ -585,7 +585,7 @@ class NewsIngester:
                     if not title or not url:
                         continue
 
-                    parsed_date = _parse_date(pub_raw)
+                    parsed_date = _parse_date(pub_raw or "")
 
                     # Extract source from title (Google News format: "Title - Source")
                     source = "Google News"

@@ -23,8 +23,6 @@ from src.backtest.walk_forward import (
     WalkForwardConfig,
     WalkForwardResult,
 )
-from src.portfolio.hrp import HRPConfig
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -289,8 +287,8 @@ class TestComputeLogReturnsForHRP:
     def test_fill_null_preserves_rows_with_partial_data(self) -> None:
         """When one ticker has missing dates, rows should NOT be dropped."""
         # AAPL has 100 days, MSFT has only 50 (starting later)
-        from datetime import timedelta
         import random
+        from datetime import timedelta
 
         rng = random.Random(42)
         rows: list[dict[str, Any]] = []
@@ -1015,7 +1013,6 @@ class TestVolatilityTargeting:
     def test_vol_targeting_reduces_vol(self) -> None:
         """Portfolio with vol targeting should have lower realised vol
         than without targeting, when target_vol < actual vol."""
-        import math
 
         ohlcv = _make_ohlcv(
             ["AAPL", "MSFT", "GOOG", "SPY"],
@@ -1077,7 +1074,6 @@ class TestVolatilityTargeting:
         )
 
         # First run without targeting to measure realised vol
-        import math
 
         res_no = self._run_with_vol(ohlcv, target_vol=None)
         rets = res_no.daily_returns["portfolio_return"].to_list()

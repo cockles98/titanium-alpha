@@ -20,7 +20,6 @@ from src.backtest.cpcv import (
     TransactionCosts,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers / fixtures local to this test module
 # ---------------------------------------------------------------------------

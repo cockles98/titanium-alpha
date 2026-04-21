@@ -48,7 +48,6 @@ from loguru import logger
 from src.backtest.cpcv import TransactionCosts
 from src.portfolio.hrp import HRPConfig, HRPOptimizer
 
-
 # ---------------------------------------------------------------------------
 # Protocols
 # ---------------------------------------------------------------------------
@@ -114,7 +113,7 @@ class NaiveModelFactory:
             0 and 1. Positive momentum → confidence > 0.5.
         """
         import math
-        
+
         scores: dict[str, float] = {}
         for ticker in df["ticker"].unique().sort().to_list():
             closes = (
@@ -125,20 +124,20 @@ class NaiveModelFactory:
             if closes.len() < 2:
                 scores[ticker] = 0.5
                 continue
-                
+
             ret = (closes[-1] - closes[0]) / closes[0]
-            
+
             # Fator k (steepness) da sigmóide, escalado inversamente pelo lookback
             k = 50.0 / max(self.lookback, 1)
-            
+
             # Aplicação da função logística (Sigmóide)
             # Retorna um valor no intervalo (0, 1) suavemente
             conf = 1.0 / (1.0 + math.exp(-k * ret))
-            
+
             # Opcional: manter os limites estritos [0.05, 0.95] se a otimização
             # do HRP exigir que nenhum peso chegue a zero absoluto tão rápido.
             scores[ticker] = max(0.05, min(0.95, conf))
-            
+
         return scores
 
 
@@ -608,7 +607,6 @@ class WalkForwardBacktester:
             days_since_retrain += 1
 
             # -- Rebalance check (skip when in cash)
-            rebalanced = False
             if not in_cash and days_since_rebalance >= cfg.rebalance_every:
                 # Reset counter unconditionally so we check again in
                 # rebalance_every days, even when min_rebalance_delta
@@ -694,13 +692,13 @@ class WalkForwardBacktester:
                     recent_simple_rets = returns_wide.filter(
                         pl.col("date") <= decision_date
                     ).tail(cfg.vol_lookback)
-                    
+
                     simulated_port_rets = []
                     for row_dict in recent_simple_rets.iter_rows(named=True):
                         # Pondera os retornos discretos/simples
                         day_ret = sum(row_dict.get(t, 0.0) * w for t, w in raw_weights.items())
                         simulated_port_rets.append(day_ret)
-                    
+
                     n_rets = len(simulated_port_rets)
                     mean_ret = sum(simulated_port_rets) / n_rets
                     var = sum((r - mean_ret) ** 2 for r in simulated_port_rets) / (n_rets - 1)
@@ -712,7 +710,7 @@ class WalkForwardBacktester:
                             cfg.min_leverage,
                             min(cfg.max_leverage, raw_leverage),
                         )
-                
+
                 # Apply leverage to raw HRP weights (sum will now equal leverage, not 1.0)
                 new_weights = {t: w * leverage for t, w in raw_weights.items()}
 
@@ -758,7 +756,6 @@ class WalkForwardBacktester:
                             retrained=retrained,
                         )
                     )
-                    rebalanced = True
 
                     logger.debug(
                         "Rebalanced on {}: turnover={:.4f} cost=${:.2f}",

@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 
 from src.agents.state import (
+    MAX_SINGLE_WEIGHT,
     VALID_ACTIONS,
     VALID_SIGNALS,
-    MAX_SINGLE_WEIGHT,
     AgentReport,
     FinalDecision,
     InvestmentState,
@@ -16,7 +16,6 @@ from src.agents.state import (
     validate_decision,
     validate_report,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -42,12 +42,10 @@ from src.agents.graph import (
 from src.agents.personas import AgentReportModel, FinalDecisionModel
 from src.agents.state import (
     AgentReport,
-    FinalDecision,
     InvestmentState,
     TickerPrediction,
     make_empty_state,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

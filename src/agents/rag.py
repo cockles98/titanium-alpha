@@ -195,7 +195,7 @@ class FinancialRAG:
                 ids=ids,
                 documents=documents,
                 embeddings=embeddings,
-                metadatas=metadatas,
+                metadatas=metadatas,  # type: ignore[arg-type]
             )
             self._mark_as_embedded(pg_ids)
             total_embedded += len(documents)
@@ -267,9 +267,9 @@ class FinancialRAG:
             return []
 
         # Flatten results (query returns nested lists)
-        all_metadatas = results["metadatas"][0]
-        all_documents = results["documents"][0] if results.get("documents") else []
-        all_distances = results["distances"][0] if results.get("distances") else []
+        all_metadatas = results["metadatas"][0]  # type: ignore[index]
+        all_documents = results["documents"][0] if results.get("documents") else []  # type: ignore[index]
+        all_distances = results["distances"][0] if results.get("distances") else []  # type: ignore[index]
 
         # Filter by date cutoff and exclude future-dated articles
         candidates: list[dict[str, Any]] = []

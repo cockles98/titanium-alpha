@@ -11,7 +11,6 @@ import pytest
 from src.data.ingestion import _resolve_tickers
 from src.models.predict import PredictionPipeline
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -19,8 +18,8 @@ from src.models.predict import PredictionPipeline
 
 def _make_ohlcv(n: int = 200, tickers: list[str] | None = None) -> pl.DataFrame:
     """Generate synthetic OHLCV data for testing."""
-    from datetime import date, timedelta
     import random
+    from datetime import date, timedelta
 
     random.seed(42)
     tickers = tickers or ["SPY"]

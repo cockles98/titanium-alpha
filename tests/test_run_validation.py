@@ -16,11 +16,9 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from src.backtest.cpcv import TransactionCosts
 from src.backtest.cpcv_oos import ValidationResult
 from src.backtest.run_validation import (
     HoldoutResult,
-    Trial,
     _dedup,
     _dyn_maxw,
     _holdout_cutoff,
@@ -46,11 +44,9 @@ from src.backtest.run_validation import (
 )
 from src.backtest.walk_forward import (
     KillswitchConfig,
-    NaiveModelFactory,
     WalkForwardConfig,
 )
 from src.portfolio.hrp import HRPConfig
-
 
 # ---------------------------------------------------------------------------
 # Synthetic data fixture

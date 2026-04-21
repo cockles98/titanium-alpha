@@ -7,9 +7,7 @@ search using synthetic OHLCV data.
 
 from __future__ import annotations
 
-import math
 from datetime import date, timedelta
-from itertools import combinations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -19,11 +17,11 @@ import pytest
 from src.backtest.cpcv_oos import (
     CPCVParameterValidator,
     ValidationResult,
-    _PurgedModelFactory,
     _compute_sharpe,
     _inv_normal_cdf,
     _kurtosis,
     _normal_cdf,
+    _PurgedModelFactory,
     _skewness,
     _std_list,
     deflated_sharpe_ratio,
@@ -33,7 +31,6 @@ from src.backtest.walk_forward import (
     WalkForwardConfig,
     WalkForwardResult,
 )
-
 
 # ---------------------------------------------------------------------------
 # Synthetic data fixture

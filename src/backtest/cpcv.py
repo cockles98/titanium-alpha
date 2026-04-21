@@ -28,13 +28,13 @@ Usage::
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Callable, Protocol
+from typing import Protocol
 
 import polars as pl
 from loguru import logger
-
 
 # ---------------------------------------------------------------------------
 # Transaction costs
@@ -512,7 +512,7 @@ class CPCVBacktester:
 
         # Transaction cost setup
         has_costs = self.costs is not None
-        fixed_cost = self.costs.fixed_cost_frac if has_costs else 0.0
+        fixed_cost = self.costs.fixed_cost_frac if self.costs is not None else 0.0
         has_volume = "volume" in test_sorted.columns
         has_market_impact = (
             has_costs
@@ -599,20 +599,25 @@ class CPCVBacktester:
 
                 prev_position = signal
                 i += self.h  # Non-overlapping
-            
+
             # NOVO: Se o bloco terminou posicionado, cobra o custo da saída forçada
             if has_costs and prev_position != 0:
                 trade_cost = fixed_cost
-                if has_market_impact and volumes is not None and avg_volume > 0:
+                if (
+                    has_market_impact
+                    and volumes is not None
+                    and avg_volume > 0
+                    and self.costs is not None
+                ):
                     # Estima impacto usando o volume da entrada correspondente
-                    last_vol = volumes[max(0, i - self.h)] 
+                    last_vol = volumes[max(0, i - self.h)]
                     relative_vol = last_vol / avg_volume
                     impact = (self.costs.market_impact_bps / 10_000) / math.sqrt(max(relative_vol, 1e-9))
                     trade_cost += impact
-                
+
                 n_trades += 1
                 total_cost_sum += trade_cost
-                
+
                 # Desconta o custo do último retorno gerado no bloco
                 if strategy_returns:
                     strategy_returns[-1] -= trade_cost

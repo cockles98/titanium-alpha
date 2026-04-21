@@ -11,7 +11,6 @@ import pytest
 
 from src.portfolio.hrp import HRPConfig, HRPOptimizer, HRPResult
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

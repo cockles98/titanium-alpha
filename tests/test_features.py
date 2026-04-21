@@ -13,7 +13,6 @@ from src.models.features import (
     volume_profile,
 )
 
-
 # ---------------------------------------------------------------------------
 # TestRSI
 # ---------------------------------------------------------------------------
@@ -132,7 +131,6 @@ class TestRealizedVolatility:
 
     def test_annualization_factor(self) -> None:
         """Constant daily return → vol should reflect √252 scaling."""
-        import math
 
         # Price series with constant 1% daily return
         prices = [100.0 * (1.01 ** i) for i in range(60)]

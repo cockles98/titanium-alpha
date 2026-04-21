@@ -52,7 +52,6 @@ from src.backtest.walk_forward import (
     WalkForwardConfig,
 )
 
-
 # ---------------------------------------------------------------------------
 # Purged model factory wrapper
 # ---------------------------------------------------------------------------
@@ -259,7 +258,7 @@ def _compute_sharpe(
     # CORREÇÃO: Equivalência geométrica em vez de divisão linear
     rf_daily = (1.0 + rf) ** (1.0 / trading_days) - 1.0
     excess = [r - rf_daily for r in returns]
-    
+
     mean_ex = sum(excess) / n
     var = sum((e - mean_ex) ** 2 for e in excess) / (n - 1)
     if var <= 0:
@@ -449,15 +448,15 @@ class CPCVParameterValidator:
 
         for g in test_groups:
             start, end = self._split_boundaries[g]
-            
+
             # Adiciona os índices do bloco de teste
             for idx in range(start, end + 1):
                 test_indices.add(idx)
-                
+
             # Embargo: dias DEPOIS do bloco de teste
             for idx in range(end + 1, min(end + 1 + self._embargo_days, len(self._trading_dates))):
                 embargo_indices.add(idx)
-                
+
             # Purge: dias ANTES do bloco de teste para evitar sobreposição do label
             for idx in range(max(0, start - self.purge_days), start):
                 purge_indices.add(idx)

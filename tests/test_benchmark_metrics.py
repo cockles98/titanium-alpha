@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from datetime import date, timedelta
 
 import polars as pl
@@ -18,7 +17,6 @@ from src.backtest.benchmark_metrics import (
     compute_benchmark_metrics,
 )
 from src.backtest.walk_forward import RebalanceRecord
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -365,6 +363,7 @@ class TestIntegrationWithWalkForward:
 
     def test_run_populates_metrics(self) -> None:
         import random
+
         from src.backtest.walk_forward import (
             NaiveModelFactory,
             WalkForwardBacktester,

@@ -9,8 +9,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from src.models.patchtst_model import TitaniumForecaster, _REQUIRED_COLS
-
+from src.models.patchtst_model import _REQUIRED_COLS, TitaniumForecaster
 
 # ---------------------------------------------------------------------------
 # TestTitaniumForecasterInit

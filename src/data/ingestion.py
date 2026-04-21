@@ -15,7 +15,7 @@ import yfinance as yf
 from loguru import logger
 from sqlalchemy import Engine, text
 
-from src.config import load_ticker_config, load_tickers
+from src.config import load_ticker_config
 from src.utils.db import get_postgres_engine
 
 DEFAULT_TICKERS: list[str] = ["SPY", "NVDA", "AAPL", "QQQ"]

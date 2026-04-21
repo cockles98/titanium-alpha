@@ -14,13 +14,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.dashboard.app import (
-    AGENT_STYLES,
     _EXPECTED_SCHEMA_VERSION,
     _METRIC_LABELS,
     _MIN_DISPLAY_WEIGHT,
     _NODE_TO_AGENT,
     _STRESS_FINDINGS,
     _VALIDATED_CONFIG,
+    AGENT_STYLES,
     _chart_action_distribution,
     _chart_benchmark_drawdown,
     _chart_benchmark_equity,
@@ -42,7 +42,6 @@ from src.dashboard.app import (
     load_debate_history,
     load_decisions,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -670,9 +669,9 @@ class TestBenchmarkFormatting:
 class TestBenchmarkCharts:
     @pytest.fixture()
     def sample_equity(self) -> Any:
-        import polars as pl
-
         from datetime import date, timedelta
+
+        import polars as pl
 
         dates = [date(2020, 1, 2) + timedelta(days=i) for i in range(100)]
         port = [1_000_000.0 * (1.001 ** i) for i in range(100)]

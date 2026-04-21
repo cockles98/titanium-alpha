@@ -107,7 +107,7 @@ class BacktestReport:
         self._render_metrics_table(axes[0])
         self._plot_equity_curves(axes[1])
 
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
         return fig
 
     def _page_sharpe_and_drawdown(self) -> matplotlib.figure.Figure:
@@ -121,7 +121,7 @@ class BacktestReport:
         self._plot_sharpe_distribution(axes[0])
         self._plot_drawdown(axes[1])
 
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
         return fig
 
     # ------------------------------------------------------------------

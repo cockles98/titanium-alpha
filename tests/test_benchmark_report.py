@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -16,7 +15,6 @@ from src.backtest.benchmark_report import (
     _rolling_sharpe,
 )
 from src.backtest.walk_forward import RebalanceRecord, WalkForwardConfig, WalkForwardResult
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
