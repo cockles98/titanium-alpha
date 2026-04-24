@@ -632,26 +632,28 @@ def _detect_drawdown_periods(
     and closes when equity reclaims that peak (``ongoing=False``) or when the
     series ends still underwater (``ongoing=True``).
 
+    Durations are measured in **trading days** (index differences in the
+    ``equity`` array), not calendar days, so they stay consistent with the
+    rest of the dashboard, which operates on a business-day grid.
+
     Args:
         equity: Equity values ordered chronologically. Must align with ``dates``.
-        dates: ``datetime.date`` (or any subtractable) values aligned with
-            ``equity``.
+        dates: Aligned date-like values (used only for event labelling, never
+            for duration arithmetic).
         min_depth: Minimum absolute fractional depth to retain (``0.01`` = 1%).
             Events shallower than this are filtered out to avoid micro-DD noise.
 
     Returns:
         List of event dicts sorted by depth ascending (deepest first). Keys:
         ``start`` (peak date), ``trough`` (min date), ``end`` (recovery date or
-        ``None``), ``depth`` (negative float, e.g. ``-0.21``), ``duration_days``,
-        ``recovery_days`` (trough → recovery, or ``None`` if ongoing), ``ongoing``.
+        ``None``), ``depth`` (negative float, e.g. ``-0.21``),
+        ``duration_days`` (peak → recovery in trading days),
+        ``recovery_days`` (trough → recovery in trading days, or ``None`` if
+        ongoing), ``ongoing``.
     """
     n = len(equity)
     if n != len(dates) or n < 2:
         return []
-
-    def _days_between(later: Any, earlier: Any) -> int:
-        delta = later - earlier
-        return int(getattr(delta, "days", delta))
 
     events: list[dict[str, Any]] = []
     peak_val = equity[0]
@@ -681,8 +683,8 @@ def _detect_drawdown_periods(
                     "trough": dates[trough_idx],
                     "end": dates[i],
                     "depth": depth,
-                    "duration_days": _days_between(dates[i], dates[peak_idx]),
-                    "recovery_days": _days_between(dates[i], dates[trough_idx]),
+                    "duration_days": i - peak_idx,
+                    "recovery_days": i - trough_idx,
                     "ongoing": False,
                 })
                 in_dd = False
@@ -697,7 +699,7 @@ def _detect_drawdown_periods(
             "trough": dates[trough_idx],
             "end": None,
             "depth": depth,
-            "duration_days": _days_between(dates[last_idx], dates[peak_idx]),
+            "duration_days": last_idx - peak_idx,
             "recovery_days": None,
             "ongoing": True,
         })
@@ -778,7 +780,7 @@ def _chart_top_drawdowns(
             "<b>%{y}</b><br>"
             "Depth: %{x:+.2%}<br>"
             "Trough: %{customdata[0]}<br>"
-            "Recovery: %{customdata[1]} days<br>"
+            "Recovery: %{customdata[1]} trading days<br>"
             "Status: %{customdata[2]}"
             "<extra></extra>"
         ),
@@ -832,8 +834,8 @@ def _render_top_drawdowns_table(equity_df: Any, n: int = 10, min_depth: float = 
             "Trough": _fmt_date(e["trough"]),
             "Recovery": _fmt_date(e["end"]),
             "Depth": f"{e['depth'] * 100:+.2f}%",
-            "Duration (d)": e["duration_days"],
-            "Trough→Rec. (d)": "—" if e["recovery_days"] is None else e["recovery_days"],
+            "Duration (td)": e["duration_days"],
+            "Trough→Rec. (td)": "—" if e["recovery_days"] is None else e["recovery_days"],
             "Status": "Ongoing" if e["ongoing"] else "Recovered",
         })
     st.dataframe(rows, width="stretch", hide_index=True)
@@ -946,14 +948,14 @@ def _chart_return_distribution(equity_df: Any) -> go.Figure | None:
     # VaR and CVaR reference lines.
     fig.add_vline(
         x=var5, line=dict(color=_ACCENT_RED, width=1.5, dash="dot"),
-        annotation_text=f"VaR 5% = {var5:+.2%}",
+        annotation_text=f"Daily VaR 5% = {var5:+.2%}",
         annotation_position="top left",
         annotation_font=dict(color=_ACCENT_RED, size=10),
         row=1, col=1,
     )
     fig.add_vline(
         x=cvar5, line=dict(color=_ACCENT_RED, width=1.5),
-        annotation_text=f"CVaR 5% = {cvar5:+.2%}",
+        annotation_text=f"Daily CVaR 5% = {cvar5:+.2%}",
         annotation_position="bottom left",
         annotation_font=dict(color=_ACCENT_RED, size=10),
         row=1, col=1,
@@ -997,7 +999,7 @@ def _chart_return_distribution(equity_df: Any) -> go.Figure | None:
     stats_title = (
         f"Return Distribution — Skew: {s['skew']:+.2f} | "
         f"Excess Kurt: {s['kurt']:+.2f} | "
-        f"VaR 5%: {var5:+.2%} | CVaR 5%: {cvar5:+.2%}"
+        f"Daily VaR 5%: {var5:+.2%} | Daily CVaR 5%: {cvar5:+.2%}"
     )
     fig.update_layout(
         title=dict(text=stats_title, font=dict(size=15, color=_TEXT)),
@@ -2059,13 +2061,28 @@ def _chart_cpcv_spaghetti(
 
     for pid in path_ids:
         path = df.filter(pl.col("path_id") == pid).sort("date")
+        raw_dates = path["date"].to_list()
+        raw_equity = path["equity"].to_list()
+        # CPCV paths covering non-adjacent test blocks (e.g. blocks (1,3))
+        # have a train-period gap between the blocks. Break the Plotly line
+        # at any > 7-day date jump so Plotly does not interpolate a diagonal
+        # "slingshot" across months where this path was off the test set.
+        x_vals: list[Any] = []
+        y_vals: list[Any] = []
+        for i, (d, eq) in enumerate(zip(raw_dates, raw_equity)):
+            if i > 0 and (d - raw_dates[i - 1]).days > 7:
+                x_vals.append(None)
+                y_vals.append(None)
+            x_vals.append(d)
+            y_vals.append(eq)
         fig.add_trace(go.Scatter(
-            x=path["date"].to_list(),
-            y=path["equity"].to_list(),
+            x=x_vals,
+            y=y_vals,
             mode="lines",
             line=dict(color=_ACCENT_BLUE, width=1),
             opacity=0.28,
             name=f"Path {pid}",
+            connectgaps=False,
             hovertemplate=(
                 f"Path {pid}<br>%{{x|%Y-%m-%d}}<br>"
                 "Equity: %{y:.3f}<extra></extra>"
@@ -2804,12 +2821,21 @@ def tab_benchmark(
         if fig_spaghetti is not None:
             st.plotly_chart(fig_spaghetti, width="stretch")
             st.caption(
-                "Each thin line is one of the 15 combinatorial CPCV-OOS "
-                "paths (champion config); the blue band is the 25–75% "
-                "percentile of equity across paths at every date, and the "
-                "gold line is the median. A tight cluster indicates low "
-                "path-dependency — the realized Sharpe did not come from "
-                "a lucky fold."
+                "Each thin line is one of the 15 C(6,2) combinatorial "
+                "CPCV-OOS test-period equity trajectories for the champion "
+                "config, each normalised to 1.0 at its own first test date. "
+                "The blue band is the 25–75% quantile of equity across "
+                "paths present at each date; the gold line is the median. "
+                "Breaks in a line mark the train-period gap of a path whose "
+                "two test blocks are non-adjacent (e.g. blocks 1 and 3). "
+                "Paths that share a start date collapse to identical "
+                "equity because the naive model factory has no trained "
+                "state to vary across folds — the visible dispersion "
+                "therefore reflects different calendar windows (and "
+                "different base dates for the 1.0 normalisation), not "
+                "different trained models. The genuine path-dependency "
+                "signal lives in the Sharpe distribution below, where "
+                "each path is computed on a different subset of dates."
             )
 
         # --- Phase 11 — Sharpe distribution across CPCV paths
@@ -2842,13 +2868,21 @@ def tab_benchmark(
                 else ""
             )
             st.caption(
-                "Violin of the 15 per-path annualised Sharpes. The dashed "
-                "line is the Deflated-Sharpe expected maximum from "
-                f"best-of-n noise strategies{dsr_note}; the gold line is "
-                "the realised walk-forward OOS Sharpe. A distribution "
-                "sitting above the dashed line — with the gold line near "
-                "the median — is the statistical proof the edge is not "
-                "selection bias."
+                "Violin of the 15 per-path annualised Sharpes. Each "
+                "Sharpe is computed on a different combination of test "
+                "blocks (1–3 years of daily returns), so the spread "
+                "captures regime sensitivity of the champion across "
+                "non-overlapping calendar windows. The gold line is the "
+                "realised walk-forward OOS Sharpe — landing inside the "
+                "IQR means the full-sample run is consistent with the "
+                "CPCV cloud (not a lucky fold). The dashed line is the "
+                "Deflated-Sharpe expected maximum from best-of-n noise "
+                f"strategies{dsr_note}; it is the benchmark for the "
+                "grid-search winner as a whole, not a per-path threshold "
+                "— so don't expect every path to exceed it. The formal "
+                "statistical evidence that the edge survives multiple "
+                "testing is the PSR in the stats box (≥ 0.95 is the "
+                "standard confidence level)."
             )
         st.divider()
 
@@ -2874,7 +2908,8 @@ def tab_benchmark(
         st.caption(
             "Peak-to-recovery drawdown events, sorted by depth (deepest at top). "
             "Only drawdowns ≥1% are shown. Ongoing drawdowns (series ends "
-            "underwater) are flagged with a trailing asterisk."
+            "underwater) are flagged with a trailing asterisk. Durations are "
+            "in trading days."
         )
         with st.expander("Drawdown detail table", expanded=False):
             _render_top_drawdowns_table(equity_df, n=10, min_depth=0.01)

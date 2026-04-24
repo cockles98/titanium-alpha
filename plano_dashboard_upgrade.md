@@ -70,7 +70,7 @@ Arquivos que já existem em `data/outputs/`:
 
 | Arquivo | Conteúdo | Loader |
 |---|---|---|
-| `benchmark_equity.parquet` | `date, equity, spy_equity` (walk-forward) | `load_benchmark_equity()` |
+| `benchmark_equity.parquet` | `date, portfolio_value, benchmark_value` (walk-forward) | `load_benchmark_equity()` |
 | `benchmark_weights.parquet` | `date × ticker → weight` | `load_benchmark_weights()` |
 | `benchmark_metrics.json` | 16 métricas agregadas | `load_benchmark_metrics()` |
 | `decisions.json` | Decisão agêntica atual + metadata | `load_decisions()` |
@@ -93,7 +93,9 @@ persistir esse dado (geralmente editando `src/backtest/walk_forward.py`,
 `src/backtest/cpcv_oos.py` ou `src/agents/pipeline.py`).
 
 ### Testes
-- Criar `tests/unit/dashboard/test_phase_N_<chart>.py`
+- Criar `tests/unit/dashboard/test_phase_N_<chart>.py` (diretório criado a
+  partir da Fase 1; contém `__init__.py` vazio para consistência com
+  `tests/__init__.py`).
 - Mock de parquet/json com dados sintéticos (10-20 linhas)
 - Teste mínimo: função retorna `go.Figure` sem exception, com ≥1 trace
 - Para helpers de cálculo (ex: up-capture, effective N): testes
@@ -151,20 +153,27 @@ em 0). Mostra sazonalidade, consistência e "anos ruins" de relance.
 Aba **Benchmark**, logo após o drawdown chart, antes das métricas.
 
 ### Dados necessários
-- `benchmark_equity.parquet` (`date`, `equity`, `spy_equity`) — já existe.
+- `benchmark_equity.parquet` (`date`, `portfolio_value`, `benchmark_value`)
+  — já existe.
 
 ### Sketch de implementação
 
 ```python
 def _compute_monthly_returns(equity_df: pl.DataFrame) -> pl.DataFrame:
-    """Return (year, month, ret) from daily equity series."""
-    # Resample month-end last, compute pct_change, pivot wide.
+    """Return (year, month, port_ret, spy_ret) from daily equity series."""
+    # Derive daily simple returns from portfolio_value / benchmark_value,
+    # then compound inside each (year, month) bucket as prod(1+r) - 1.
+    # This is robust for partial first/last months (first daily return is
+    # dropped so no uncovered month becomes 0% by accident).
 
 def _chart_calendar_heatmap(equity_df: pl.DataFrame) -> go.Figure:
     """12-column heatmap: rows=years, cols=Jan..Dec, color=ret."""
-    # Use px.imshow with RdYlGn_r, zmid=0, zmin=-0.15, zmax=0.15
+    # go.Heatmap with colorscale="RdYlGn" (green=positive, red=negative),
+    # zmid=0, zmin=-0.15, zmax=0.15. Do NOT use RdYlGn_r — with zmid=0 the
+    # non-reversed scale already maps positive→green / negative→red.
     # Annotate each cell with "+2.3%" / "-4.1%" text in white.
-    # Add a bottom row "Annual" with total year return.
+    # Append an "Annual" column with full-year compounded return and a
+    # "Mean" row at the bottom (seasonality).
 ```
 
 ### Cuidados
@@ -230,6 +239,11 @@ def _chart_top_drawdowns(equity_df: pl.DataFrame, n: int = 10) -> go.Figure:
 - **Mínimo de 1% de profundidade:** evitar spam de micro-drawdowns.
 - **Overlap:** usar apenas peak-to-trough único (definição padrão, ver
   `src/backtest/benchmark_metrics.py` se já houver).
+- **Trading days, não calendar days:** medir `duration_days` e
+  `recovery_days` como diferença de índice no array de equity (a série é
+  em business-day grid). Calcular via `(later - earlier).days` puxa o
+  gap de fim de semana/feriado e gera números inconsistentes com o resto
+  do dashboard, que opera em dias úteis.
 
 ### Critério de aceite
 - 10 barras ordenadas por magnitude.
@@ -301,16 +315,21 @@ def _chart_return_distribution(equity_df: pl.DataFrame) -> go.Figure:
 ```
 
 ### Cuidados
-- **Skew/kurtosis anotados:** mostrar `skew=X.X, kurt=X.X` no título.
-- **VaR/CVaR em % anualizado** seria mais legível, ou deixar em
-  diário com label "Daily VaR 5%".
-- **QQ empírico vs teórico:** não confundir ordem dos eixos.
+- **Skew/kurtosis anotados:** mostrar `Skew: X.XX | Excess Kurt: X.XX` no
+  título (usar kurtosis **de excesso** / Fisher, que é 0 para a normal —
+  evita o valor 3 de base que confunde o leitor).
+- **VaR/CVaR rotulados como diários:** o eixo X está em retorno diário,
+  então o título e as vlines devem dizer "Daily VaR 5%" / "Daily CVaR 5%"
+  explicitamente.
+- **QQ empírico vs teórico:** não confundir ordem dos eixos. Usar
+  plotting positions Blom-like `(i-0.5)/n` em vez de `linspace(0.01, 0.99)`.
 
 ### Critério de aceite
 - Histograma + fit normal visível.
 - Cauda < VaR sombreada em vermelho claro.
 - QQ com pontos fugindo da diagonal nas pontas (prova visual de fat tail).
-- Anotação textual: `Skew: -0.42 | Kurtosis: 5.18 | VaR 5%: -1.8% | CVaR 5%: -2.7%`.
+- Anotação textual: `Skew: -0.58 | Excess Kurt: +10.66 | Daily VaR 5%: -1.02% | Daily CVaR 5%: -1.71%`
+  (valores do champion 10y OOS como referência).
 
 ### Esforço
 M (3-4h). Subplot + scipy + anotações. Cuidado com NaN de primeiro dia.
@@ -1218,17 +1237,17 @@ Ao implementar cada fase, seguir:
 
 | Fase | Status | Commit | Screenshot |
 |---|---|---|---|
-| 1 — Calendar heatmap | ✅ | pending | — |
-| 2 — Top-10 drawdowns | ✅ | pending | — |
-| 3 — Distribution + QQ | ✅ | pending | — |
-| 4 — Rolling beta/alpha | ✅ | pending | — |
-| 5 — Up/Down capture | ✅ | pending | — |
-| 6 — CAPM scatter | ✅ | pending | — |
-| 7 — Turnover + costs | ✅ | pending | — |
-| 8 — Effective N / Gini | ✅ | pending | — |
-| 9 — Contribution waterfall | ✅ | pending | — |
-| 10 — CPCV spaghetti | ✅ | pending | — |
-| 11 — Sharpe violin | ✅ | pending | — |
+| 1 — Calendar heatmap | ✅ | `b5e55c4` (bundled) | — |
+| 2 — Top-10 drawdowns | ✅ | `b5e55c4` (bundled) | — |
+| 3 — Distribution + QQ | ✅ | `b5e55c4` (bundled) | — |
+| 4 — Rolling beta/alpha | ✅ | `b5e55c4` (bundled) | — |
+| 5 — Up/Down capture | ✅ | `b5e55c4` (bundled) | — |
+| 6 — CAPM scatter | ✅ | `b5e55c4` (bundled) | — |
+| 7 — Turnover + costs | ✅ | `b5e55c4` (bundled) | — |
+| 8 — Effective N / Gini | ✅ | `b5e55c4` (bundled) | — |
+| 9 — Contribution waterfall | ✅ | `b5e55c4` (bundled) | — |
+| 10 — CPCV spaghetti | ✅ | `b5e55c4` (bundled) | — |
+| 11 — Sharpe violin | ✅ | `b5e55c4` (bundled) | — |
 | 12 — Agent vote matrix | ⬜ | — | — |
 | 13 — Agent agreement | ⬜ | — | — |
 | 14 — RAG source frequency | ⬜ | — | — |

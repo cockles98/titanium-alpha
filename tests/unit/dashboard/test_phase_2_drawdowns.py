@@ -47,8 +47,8 @@ def test_detector_finds_simple_v_shape():
     assert e["trough"] == dates[3]
     assert e["end"] == dates[6]
     assert e["ongoing"] is False
-    assert e["duration_days"] == 6  # dates[6] - dates[0]
-    assert e["recovery_days"] == 3  # dates[6] - dates[3]
+    assert e["duration_days"] == 6  # index diff: recovery idx 6 - peak idx 0
+    assert e["recovery_days"] == 3  # index diff: recovery idx 6 - trough idx 3
 
 
 def test_detector_handles_ongoing_drawdown():
@@ -98,6 +98,39 @@ def test_detector_tracks_deepest_trough_within_event():
     e = events[0]
     assert e["trough"] == dates[4]  # deeper trough at idx 4, not idx 1
     assert e["depth"] == pytest.approx(-0.25, abs=1e-9)
+
+
+def test_detector_durations_are_trading_days_not_calendar():
+    """Durations must come from array indices, not calendar-date arithmetic.
+
+    Build a series whose adjacent dates have weekend gaps (3 calendar days
+    between Fri and Mon) and verify that duration counts array positions,
+    not the 3-day jumps — keeps Phase 2 aligned with the business-day grid
+    used everywhere else in the dashboard.
+    """
+    # 0: Mon, 1: Tue, 2: Wed, 3: Thu, 4: Fri, 5: Mon (+3 calendar days),
+    # 6: Tue, 7: Wed, 8: Thu, 9: Fri.
+    trading_dates = [
+        date(2024, 1, 1),  # Mon
+        date(2024, 1, 2),
+        date(2024, 1, 3),
+        date(2024, 1, 4),
+        date(2024, 1, 5),  # Fri
+        date(2024, 1, 8),  # Mon — weekend gap
+        date(2024, 1, 9),
+        date(2024, 1, 10),
+        date(2024, 1, 11),
+        date(2024, 1, 12),
+    ]
+    # Peak idx 0, trough idx 3, recovery idx 7. In calendar days that would
+    # be (2024-01-10 - 2024-01-01) = 9 days. In trading days (index diff):
+    # duration = 7, recovery = 7 - 3 = 4.
+    equity = [100.0, 98.0, 95.0, 90.0, 92.0, 95.0, 98.0, 100.0, 101.0, 102.0]
+    events = _detect_drawdown_periods(equity, trading_dates, min_depth=0.01)
+    assert len(events) == 1
+    e = events[0]
+    assert e["duration_days"] == 7, "duration must be index diff (trading days)"
+    assert e["recovery_days"] == 4, "recovery must be index diff (trading days)"
 
 
 def test_detector_sorts_deepest_first():
