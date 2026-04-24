@@ -211,6 +211,70 @@ def load_benchmark_weights() -> Any | None:
         return None
 
 
+@st.cache_data(ttl=300)
+def load_ticker_returns() -> Any | None:
+    """Load ticker_returns.parquet (wide daily returns date × ticker).
+
+    Returns ``None`` if the file is missing — it is only produced by the
+    walk-forward backtester when the result carries a populated
+    ``ticker_returns`` DataFrame, so legacy benchmark runs may not have it.
+    """
+    path = DATA_DIR / "ticker_returns.parquet"
+    if not path.exists():
+        return None
+    try:
+        import polars as pl
+
+        return pl.read_parquet(path)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=300)
+def load_cpcv_paths() -> Any | None:
+    """Load cpcv_paths.parquet (long format: config, path_id, date, equity, sharpe).
+
+    Produced by ``src.backtest.cpcv_oos.save_cpcv_paths`` after a
+    ``validate(..., collect_equity=True)`` run on the champion config.
+    Returns ``None`` when the file is absent so the Phase 10 spaghetti chart
+    can degrade gracefully.
+    """
+    path = DATA_DIR / "cpcv_paths.parquet"
+    if not path.exists():
+        return None
+    try:
+        import polars as pl
+
+        return pl.read_parquet(path)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=300)
+def load_cpcv_total_trials() -> int | None:
+    """Sum ``total_trials`` across ``validation_tier*_results.json`` files.
+
+    The 3-tier grid search persists one JSON per tier; the Deflated Sharpe
+    Ratio correction in Phase 11 needs the aggregated trial count to
+    compute the expected-max Sharpe reference line. Returns ``None`` when
+    no tier files are present so the chart can skip the DSR line
+    gracefully.
+    """
+    total = 0
+    found = False
+    for path in sorted(DATA_DIR.glob("validation_tier*_results.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            trials = data.get("total_trials")
+            if isinstance(trials, (int, float)) and trials > 0:
+                total += int(trials)
+                found = True
+        except Exception:
+            continue
+    return total if found else None
+
+
 # ---------------------------------------------------------------------------
 # Tab 0: Benchmark
 # ---------------------------------------------------------------------------
@@ -344,6 +408,1074 @@ def _chart_benchmark_drawdown(equity_df: Any) -> go.Figure:
     return fig
 
 
+_MONTH_LABELS: tuple[str, ...] = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
+
+
+def _compute_monthly_returns(equity_df: Any) -> Any:
+    """Compute within-month compounded returns for portfolio and benchmark.
+
+    Daily returns are derived from ``portfolio_value`` / ``benchmark_value``
+    and compounded inside each (year, month) bucket as ``prod(1+r) - 1``.
+    This gives a well-defined return for partial months (e.g. the first
+    month of the backtest) without reaching past the first observation.
+
+    Args:
+        equity_df: Polars DataFrame with columns ``date``, ``portfolio_value``
+            and ``benchmark_value`` (as produced by the walk-forward pipeline).
+
+    Returns:
+        Polars DataFrame with columns ``year`` (Int32), ``month`` (Int8),
+        ``port_ret`` (Float64), ``spy_ret`` (Float64), sorted by (year, month).
+        Only months with at least one daily return are included.
+    """
+    import polars as pl
+
+    df = (
+        equity_df.sort("date")
+        .with_columns([
+            pl.col("date").dt.year().alias("year"),
+            pl.col("date").dt.month().alias("month"),
+            (pl.col("portfolio_value") / pl.col("portfolio_value").shift(1) - 1.0)
+            .alias("port_dret"),
+            (pl.col("benchmark_value") / pl.col("benchmark_value").shift(1) - 1.0)
+            .alias("spy_dret"),
+        ])
+        .drop_nulls(["port_dret", "spy_dret"])
+    )
+    return (
+        df.group_by(["year", "month"])
+        .agg([
+            ((pl.col("port_dret") + 1.0).product() - 1.0).alias("port_ret"),
+            ((pl.col("spy_dret") + 1.0).product() - 1.0).alias("spy_ret"),
+        ])
+        .sort(["year", "month"])
+    )
+
+
+def _compute_annual_returns(equity_df: Any) -> Any:
+    """Compute within-year compounded returns for portfolio and benchmark.
+
+    Args:
+        equity_df: Polars DataFrame with columns ``date``, ``portfolio_value``
+            and ``benchmark_value``.
+
+    Returns:
+        Polars DataFrame with columns ``year`` (Int32), ``port_ret``, ``spy_ret``.
+    """
+    import polars as pl
+
+    df = (
+        equity_df.sort("date")
+        .with_columns([
+            pl.col("date").dt.year().alias("year"),
+            (pl.col("portfolio_value") / pl.col("portfolio_value").shift(1) - 1.0)
+            .alias("port_dret"),
+            (pl.col("benchmark_value") / pl.col("benchmark_value").shift(1) - 1.0)
+            .alias("spy_dret"),
+        ])
+        .drop_nulls(["port_dret", "spy_dret"])
+    )
+    return (
+        df.group_by("year")
+        .agg([
+            ((pl.col("port_dret") + 1.0).product() - 1.0).alias("port_ret"),
+            ((pl.col("spy_dret") + 1.0).product() - 1.0).alias("spy_ret"),
+        ])
+        .sort("year")
+    )
+
+
+def _chart_calendar_heatmap(equity_df: Any) -> go.Figure | None:
+    """Monthly-returns calendar heatmap (12 months + Annual column + Mean row).
+
+    Rows are years (most recent on top). Columns are Jan..Dec followed by a
+    bold ``Annual`` column showing the full-year compounded return. A bottom
+    ``Mean`` row shows the average return per calendar month across covered
+    years (seasonality view). Months outside the backtest coverage render as
+    empty cells (null) — never as 0% — so partial first/last years stay
+    visually distinct from zero-return months.
+
+    Args:
+        equity_df: Polars DataFrame with columns ``date``, ``portfolio_value``,
+            ``benchmark_value``.
+
+    Returns:
+        Plotly Figure, or ``None`` if fewer than 2 months of data are available.
+    """
+    import polars as pl
+
+    monthly = _compute_monthly_returns(equity_df)
+    if monthly.height < 2:
+        return None
+    annual = _compute_annual_returns(equity_df)
+
+    years_desc = sorted(monthly["year"].unique().to_list(), reverse=True)
+    x_labels = list(_MONTH_LABELS) + ["Annual"]
+
+    # Build {(year, month): ret} lookup for portfolio returns only.
+    by_ym = {
+        (row["year"], row["month"]): row["port_ret"]
+        for row in monthly.select(["year", "month", "port_ret"]).to_dicts()
+    }
+    by_year = {
+        row["year"]: row["port_ret"]
+        for row in annual.select(["year", "port_ret"]).to_dicts()
+    }
+
+    z: list[list[float | None]] = []
+    text: list[list[str]] = []
+    for y in years_desc:
+        row_z: list[float | None] = []
+        row_text: list[str] = []
+        for m in range(1, 13):
+            ret = by_ym.get((y, m))
+            row_z.append(ret)
+            row_text.append(f"{ret * 100:+.1f}%" if ret is not None else "")
+        ann = by_year.get(y)
+        row_z.append(ann)
+        row_text.append(f"<b>{ann * 100:+.1f}%</b>" if ann is not None else "")
+        z.append(row_z)
+        text.append(row_text)
+
+    # Bonus: mean row (seasonality) — simple mean over years for each month + annual.
+    mean_row_z: list[float | None] = []
+    mean_row_text: list[str] = []
+    for m in range(1, 13):
+        vals = [by_ym[(y, m)] for y in years_desc if (y, m) in by_ym]
+        if vals:
+            mean = sum(vals) / len(vals)
+            mean_row_z.append(mean)
+            mean_row_text.append(f"<i>{mean * 100:+.1f}%</i>")
+        else:
+            mean_row_z.append(None)
+            mean_row_text.append("")
+    year_vals = [by_year[y] for y in years_desc if y in by_year]
+    if year_vals:
+        mean_ann = sum(year_vals) / len(year_vals)
+        mean_row_z.append(mean_ann)
+        mean_row_text.append(f"<b><i>{mean_ann * 100:+.1f}%</i></b>")
+    else:
+        mean_row_z.append(None)
+        mean_row_text.append("")
+    z.append(mean_row_z)
+    text.append(mean_row_text)
+
+    y_labels = [str(y) for y in years_desc] + ["Mean"]
+
+    fig = go.Figure(data=go.Heatmap(
+        z=z,
+        x=x_labels,
+        y=y_labels,
+        text=text,
+        texttemplate="%{text}",
+        textfont=dict(size=11, color="white"),
+        colorscale="RdYlGn",
+        zmid=0.0,
+        zmin=-0.15,
+        zmax=0.15,
+        hovertemplate=(
+            "Year: %{y}<br>Month: %{x}<br>Return: %{z:+.2%}<extra></extra>"
+        ),
+        colorbar=dict(
+            title=dict(text="Return", font=dict(color=_TEXT)),
+            tickformat=".0%",
+            tickfont=dict(color=_TEXT),
+        ),
+        xgap=2,
+        ygap=2,
+    ))
+    # Visual separator between Dec and the Annual column.
+    fig.add_shape(
+        type="line",
+        xref="x", yref="paper",
+        x0=11.5, x1=11.5, y0=0, y1=1,
+        line=dict(color="#666666", width=2),
+    )
+    fig.update_layout(
+        title=dict(
+            text="Monthly Returns Heatmap — Portfolio",
+            font=dict(size=16, color=_TEXT),
+        ),
+        xaxis=dict(
+            title="Month",
+            side="top",
+            tickfont=dict(color=_TEXT),
+            showgrid=False,
+        ),
+        yaxis=dict(
+            title="Year",
+            autorange="reversed",
+            tickfont=dict(color=_TEXT),
+            showgrid=False,
+        ),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        height=max(320, 34 * len(y_labels) + 120),
+        margin=dict(t=80, b=40, l=60, r=20),
+    )
+    return fig
+
+
+def _detect_drawdown_periods(
+    equity: list[float],
+    dates: list[Any],
+    min_depth: float = 0.01,
+) -> list[dict[str, Any]]:
+    """Identify peak-to-recovery drawdown events in an equity series.
+
+    Walks the series tracking the running high-water mark. A drawdown event
+    opens the first day equity dips below the prior peak, tracks the trough,
+    and closes when equity reclaims that peak (``ongoing=False``) or when the
+    series ends still underwater (``ongoing=True``).
+
+    Args:
+        equity: Equity values ordered chronologically. Must align with ``dates``.
+        dates: ``datetime.date`` (or any subtractable) values aligned with
+            ``equity``.
+        min_depth: Minimum absolute fractional depth to retain (``0.01`` = 1%).
+            Events shallower than this are filtered out to avoid micro-DD noise.
+
+    Returns:
+        List of event dicts sorted by depth ascending (deepest first). Keys:
+        ``start`` (peak date), ``trough`` (min date), ``end`` (recovery date or
+        ``None``), ``depth`` (negative float, e.g. ``-0.21``), ``duration_days``,
+        ``recovery_days`` (trough → recovery, or ``None`` if ongoing), ``ongoing``.
+    """
+    n = len(equity)
+    if n != len(dates) or n < 2:
+        return []
+
+    def _days_between(later: Any, earlier: Any) -> int:
+        delta = later - earlier
+        return int(getattr(delta, "days", delta))
+
+    events: list[dict[str, Any]] = []
+    peak_val = equity[0]
+    peak_idx = 0
+    in_dd = False
+    trough_val = peak_val
+    trough_idx = 0
+
+    for i in range(1, n):
+        v = equity[i]
+        if not in_dd:
+            if v >= peak_val:
+                peak_val = v
+                peak_idx = i
+            else:
+                in_dd = True
+                trough_val = v
+                trough_idx = i
+        else:
+            if v < trough_val:
+                trough_val = v
+                trough_idx = i
+            if v >= peak_val:
+                depth = (trough_val - peak_val) / peak_val if peak_val else 0.0
+                events.append({
+                    "start": dates[peak_idx],
+                    "trough": dates[trough_idx],
+                    "end": dates[i],
+                    "depth": depth,
+                    "duration_days": _days_between(dates[i], dates[peak_idx]),
+                    "recovery_days": _days_between(dates[i], dates[trough_idx]),
+                    "ongoing": False,
+                })
+                in_dd = False
+                peak_val = v
+                peak_idx = i
+
+    if in_dd:
+        depth = (trough_val - peak_val) / peak_val if peak_val else 0.0
+        last_idx = n - 1
+        events.append({
+            "start": dates[peak_idx],
+            "trough": dates[trough_idx],
+            "end": None,
+            "depth": depth,
+            "duration_days": _days_between(dates[last_idx], dates[peak_idx]),
+            "recovery_days": None,
+            "ongoing": True,
+        })
+
+    events = [e for e in events if abs(e["depth"]) >= min_depth]
+    events.sort(key=lambda e: e["depth"])  # most negative first
+    return events
+
+
+def _format_dd_label(event: dict[str, Any]) -> str:
+    """Short y-axis label for a drawdown event: ``YYYY-MM → YYYY-MM (Nd)*``."""
+    start = event["start"]
+    start_s = start.strftime("%Y-%m") if hasattr(start, "strftime") else str(start)
+    if event["ongoing"]:
+        return f"{start_s} → ongoing ({event['duration_days']}d)*"
+    end = event["end"]
+    end_s = end.strftime("%Y-%m") if hasattr(end, "strftime") else str(end)
+    return f"{start_s} → {end_s} ({event['duration_days']}d)"
+
+
+def _chart_top_drawdowns(
+    equity_df: Any,
+    n: int = 10,
+    min_depth: float = 0.01,
+) -> go.Figure | None:
+    """Horizontal bar chart of the top-N deepest drawdowns.
+
+    Bars are sorted deepest-first (top of the chart). Depth is shown as a
+    negative percentage; darker red = deeper. Ongoing drawdowns (series ends
+    still underwater) are marked with a trailing asterisk in the label.
+
+    Args:
+        equity_df: Polars DataFrame with ``date`` and ``portfolio_value``.
+        n: Maximum number of drawdown events to display (default ``10``).
+        min_depth: Minimum absolute fractional depth to retain (default ``0.01``).
+
+    Returns:
+        Plotly Figure, or ``None`` if the series has no drawdown at least
+        ``min_depth`` deep.
+    """
+    equity = equity_df["portfolio_value"].to_list()
+    dates = equity_df["date"].to_list()
+    events = _detect_drawdown_periods(equity, dates, min_depth=min_depth)
+    if not events:
+        return None
+
+    events = events[:n]
+    labels = [_format_dd_label(e) for e in events]
+    depths = [e["depth"] for e in events]
+    depth_pct_abs = [abs(d) for d in depths]
+
+    customdata = [
+        [
+            e["trough"].strftime("%Y-%m-%d") if hasattr(e["trough"], "strftime") else str(e["trough"]),
+            e["recovery_days"] if e["recovery_days"] is not None else float("nan"),
+            "ongoing" if e["ongoing"] else "recovered",
+        ]
+        for e in events
+    ]
+
+    fig = go.Figure(data=go.Bar(
+        x=depths,
+        y=labels,
+        orientation="h",
+        marker=dict(
+            color=depth_pct_abs,
+            colorscale="Reds",
+            cmin=0.0,
+            cmax=max(depth_pct_abs + [0.05]),
+            showscale=False,
+            line=dict(color="#222", width=0.5),
+        ),
+        text=[f"{d * 100:+.2f}%" for d in depths],
+        textposition="outside",
+        textfont=dict(color=_TEXT, size=11),
+        customdata=customdata,
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            "Depth: %{x:+.2%}<br>"
+            "Trough: %{customdata[0]}<br>"
+            "Recovery: %{customdata[1]} days<br>"
+            "Status: %{customdata[2]}"
+            "<extra></extra>"
+        ),
+    ))
+    fig.update_layout(
+        title=dict(
+            text=f"Top {len(events)} Drawdowns — Portfolio",
+            font=dict(size=16, color=_TEXT),
+        ),
+        xaxis=dict(
+            title="Depth",
+            tickformat=".0%",
+            zeroline=True,
+            zerolinecolor="#444",
+            gridcolor="#222",
+        ),
+        yaxis=dict(
+            title=None,
+            autorange="reversed",  # deepest at top
+            tickfont=dict(color=_TEXT),
+            showgrid=False,
+        ),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        height=max(320, 36 * len(events) + 120),
+        margin=dict(t=50, b=40, l=200, r=80),
+        showlegend=False,
+    )
+    return fig
+
+
+def _render_top_drawdowns_table(equity_df: Any, n: int = 10, min_depth: float = 0.01) -> None:
+    """Render a companion table with the same drawdown events as the bar chart."""
+    equity = equity_df["portfolio_value"].to_list()
+    dates = equity_df["date"].to_list()
+    events = _detect_drawdown_periods(equity, dates, min_depth=min_depth)[:n]
+    if not events:
+        return
+
+    def _fmt_date(d: Any) -> str:
+        if d is None:
+            return "—"
+        return d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
+
+    rows = []
+    for rank, e in enumerate(events, start=1):
+        rows.append({
+            "#": rank,
+            "Start (peak)": _fmt_date(e["start"]),
+            "Trough": _fmt_date(e["trough"]),
+            "Recovery": _fmt_date(e["end"]),
+            "Depth": f"{e['depth'] * 100:+.2f}%",
+            "Duration (d)": e["duration_days"],
+            "Trough→Rec. (d)": "—" if e["recovery_days"] is None else e["recovery_days"],
+            "Status": "Ongoing" if e["ongoing"] else "Recovered",
+        })
+    st.dataframe(rows, width="stretch", hide_index=True)
+
+
+def _portfolio_daily_returns(equity_df: Any) -> list[float]:
+    """Extract daily simple returns from ``portfolio_value`` dropping the first NaN."""
+    values = equity_df["portfolio_value"].to_list()
+    return [values[i] / values[i - 1] - 1.0 for i in range(1, len(values))]
+
+
+def _return_distribution_stats(rets: list[float]) -> dict[str, float]:
+    """Compute mean, std, skew, excess kurtosis, VaR 5%, CVaR 5% of a return series.
+
+    Args:
+        rets: Daily simple returns (length ≥ 2 required).
+
+    Returns:
+        Dict with keys ``mu``, ``sigma``, ``skew``, ``kurt`` (excess kurtosis
+        with Fisher's definition: 0 for a normal distribution), ``var5``
+        (5th percentile, negative for a losing tail), ``cvar5`` (mean of
+        returns below VaR 5%).
+    """
+    import numpy as np
+    import scipy.stats as stats
+
+    arr = np.asarray(rets, dtype=float)
+    mu = float(arr.mean())
+    sigma = float(arr.std(ddof=1))
+    skew = float(stats.skew(arr, bias=False))
+    kurt = float(stats.kurtosis(arr, fisher=True, bias=False))
+    var5 = float(np.quantile(arr, 0.05))
+    tail = arr[arr <= var5]
+    cvar5 = float(tail.mean()) if tail.size else var5
+    return {
+        "mu": mu,
+        "sigma": sigma,
+        "skew": skew,
+        "kurt": kurt,
+        "var5": var5,
+        "cvar5": cvar5,
+    }
+
+
+def _chart_return_distribution(equity_df: Any) -> go.Figure | None:
+    """Two-panel chart: return histogram (with normal fit) + QQ-plot vs normal.
+
+    Left panel overlays a fitted normal PDF on the empirical histogram and
+    shades the left tail beyond VaR 5% in red (tail-risk proof). Right panel
+    plots empirical quantiles against theoretical normal quantiles with a
+    reference line ``y = σ·x + μ`` — points bending away from the line at
+    either extreme indicate fat tails / skew.
+
+    Args:
+        equity_df: Polars DataFrame with ``portfolio_value`` column.
+
+    Returns:
+        Plotly Figure with 2 subplots, or ``None`` if fewer than 30 daily
+        returns are available (below which skew/kurtosis are unreliable).
+    """
+    import numpy as np
+    import scipy.stats as stats
+    from plotly.subplots import make_subplots
+
+    rets = _portfolio_daily_returns(equity_df)
+    if len(rets) < 30:
+        return None
+
+    arr = np.asarray(rets, dtype=float)
+    s = _return_distribution_stats(rets)
+    mu, sigma, var5, cvar5 = s["mu"], s["sigma"], s["var5"], s["cvar5"]
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=("Daily Return Distribution", "Q-Q Plot vs Normal"),
+        horizontal_spacing=0.12,
+    )
+
+    # --- Column 1: histogram + normal PDF overlay + VaR5 shading ---
+    fig.add_trace(
+        go.Histogram(
+            x=arr,
+            histnorm="probability density",
+            name="Empirical",
+            marker=dict(color=_ACCENT_BLUE, line=dict(color="#111", width=0.5)),
+            opacity=0.75,
+            nbinsx=60,
+            hovertemplate="Return: %{x:+.2%}<br>Density: %{y:.2f}<extra></extra>",
+        ),
+        row=1, col=1,
+    )
+    xs = np.linspace(arr.min(), arr.max(), 200)
+    pdf = stats.norm.pdf(xs, mu, sigma)
+    fig.add_trace(
+        go.Scatter(
+            x=xs, y=pdf, mode="lines",
+            name="Normal fit",
+            line=dict(color=_ACCENT_GOLD, width=2, dash="dash"),
+            hovertemplate="x=%{x:+.2%}<br>φ(x)=%{y:.2f}<extra></extra>",
+        ),
+        row=1, col=1,
+    )
+    # Shade the left tail < VaR 5%.
+    fig.add_vrect(
+        x0=float(arr.min()), x1=var5,
+        fillcolor=_ACCENT_RED, opacity=0.18,
+        line_width=0,
+        row=1, col=1,
+    )
+    # VaR and CVaR reference lines.
+    fig.add_vline(
+        x=var5, line=dict(color=_ACCENT_RED, width=1.5, dash="dot"),
+        annotation_text=f"VaR 5% = {var5:+.2%}",
+        annotation_position="top left",
+        annotation_font=dict(color=_ACCENT_RED, size=10),
+        row=1, col=1,
+    )
+    fig.add_vline(
+        x=cvar5, line=dict(color=_ACCENT_RED, width=1.5),
+        annotation_text=f"CVaR 5% = {cvar5:+.2%}",
+        annotation_position="bottom left",
+        annotation_font=dict(color=_ACCENT_RED, size=10),
+        row=1, col=1,
+    )
+
+    # --- Column 2: QQ-plot with reference line y = σ·x + μ ---
+    n = len(arr)
+    # Use (i-0.5)/n plotting positions (Blom-like, standard in QQ plots).
+    ppos = (np.arange(1, n + 1) - 0.5) / n
+    theoretical = stats.norm.ppf(ppos)
+    empirical = np.sort(arr)
+    fig.add_trace(
+        go.Scatter(
+            x=theoretical, y=empirical,
+            mode="markers",
+            name="Empirical",
+            marker=dict(color=_ACCENT_BLUE, size=4, opacity=0.65),
+            hovertemplate=(
+                "Theoretical z=%{x:.2f}<br>Empirical=%{y:+.2%}<extra></extra>"
+            ),
+            showlegend=False,
+        ),
+        row=1, col=2,
+    )
+    lo, hi = float(theoretical.min()), float(theoretical.max())
+    ref_xs = np.array([lo, hi])
+    ref_ys = ref_xs * sigma + mu
+    fig.add_trace(
+        go.Scatter(
+            x=ref_xs, y=ref_ys,
+            mode="lines",
+            name="Normal reference",
+            line=dict(color=_ACCENT_GOLD, width=2, dash="dash"),
+            hovertemplate="ref: y=σx+μ<extra></extra>",
+            showlegend=False,
+        ),
+        row=1, col=2,
+    )
+
+    # --- Layout ---
+    stats_title = (
+        f"Return Distribution — Skew: {s['skew']:+.2f} | "
+        f"Excess Kurt: {s['kurt']:+.2f} | "
+        f"VaR 5%: {var5:+.2%} | CVaR 5%: {cvar5:+.2%}"
+    )
+    fig.update_layout(
+        title=dict(text=stats_title, font=dict(size=15, color=_TEXT)),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        legend=dict(font=dict(color=_TEXT), orientation="h",
+                    yanchor="bottom", y=-0.18, xanchor="center", x=0.25),
+        height=450,
+        margin=dict(t=70, b=60, l=60, r=20),
+        bargap=0.02,
+    )
+    fig.update_xaxes(
+        title_text="Daily Return", tickformat=".1%",
+        gridcolor="#222", zerolinecolor="#444",
+        row=1, col=1,
+    )
+    fig.update_yaxes(
+        title_text="Density",
+        gridcolor="#222", zerolinecolor="#444",
+        row=1, col=1,
+    )
+    fig.update_xaxes(
+        title_text="Theoretical Quantiles (z)",
+        gridcolor="#222", zerolinecolor="#444",
+        row=1, col=2,
+    )
+    fig.update_yaxes(
+        title_text="Empirical Return", tickformat=".1%",
+        gridcolor="#222", zerolinecolor="#444",
+        row=1, col=2,
+    )
+    return fig
+
+
+def _rolling_regression(
+    port_ret: Any,
+    spy_ret: Any,
+    window: int,
+) -> tuple[Any, Any, Any]:
+    """Rolling OLS of portfolio returns on benchmark returns.
+
+    For every trailing window of size ``window`` ending at index ``t``:
+
+    * ``beta = Cov(port, spy) / Var(spy)``
+    * ``alpha_daily = mean(port) - beta * mean(spy)``
+    * ``alpha_annual = alpha_daily * 252``
+    * ``correlation = Corr(port, spy)``
+
+    Args:
+        port_ret: Portfolio daily returns (1-D array-like).
+        spy_ret: Benchmark daily returns, same length.
+        window: Rolling window size in trading days (≥ 2).
+
+    Returns:
+        Three numpy arrays aligned with the input: ``beta``, ``alpha_annual``,
+        ``correlation``. The first ``window-1`` positions are ``NaN`` (warmup).
+        If ``Var(spy)`` inside a window is zero, ``beta`` is ``NaN`` for that t.
+    """
+    import numpy as np
+
+    p = np.asarray(port_ret, dtype=float)
+    s = np.asarray(spy_ret, dtype=float)
+    n = p.size
+    beta = np.full(n, np.nan)
+    alpha_ann = np.full(n, np.nan)
+    corr = np.full(n, np.nan)
+    if window < 2 or n < window:
+        return beta, alpha_ann, corr
+
+    for t in range(window - 1, n):
+        wp = p[t - window + 1: t + 1]
+        ws = s[t - window + 1: t + 1]
+        mp = wp.mean()
+        ms = ws.mean()
+        dp = wp - mp
+        ds = ws - ms
+        var_s = float((ds * ds).sum() / (window - 1))
+        cov_ps = float((dp * ds).sum() / (window - 1))
+        if var_s <= 0:
+            continue
+        b = cov_ps / var_s
+        beta[t] = b
+        alpha_ann[t] = (mp - b * ms) * 252.0
+        std_p = float(np.sqrt((dp * dp).sum() / (window - 1)))
+        std_s = float(np.sqrt(var_s))
+        if std_p > 0 and std_s > 0:
+            corr[t] = cov_ps / (std_p * std_s)
+    return beta, alpha_ann, corr
+
+
+def _chart_rolling_market_relationship(
+    equity_df: Any, window: int = 126
+) -> go.Figure | None:
+    """Stacked 3-panel chart: rolling beta, alpha (annualized), correlation vs SPY.
+
+    Args:
+        equity_df: Polars DataFrame with ``date``, ``portfolio_value``,
+            ``benchmark_value``.
+        window: Rolling window in trading days (default ``126`` ≈ 6 months).
+
+    Returns:
+        Plotly Figure, or ``None`` if insufficient data.
+    """
+    import numpy as np
+    from plotly.subplots import make_subplots
+
+    port_vals = equity_df["portfolio_value"].to_list()
+    spy_vals = equity_df["benchmark_value"].to_list()
+    dates = equity_df["date"].to_list()
+    if len(port_vals) < window + 2:
+        return None
+
+    port_ret = np.array(
+        [port_vals[i] / port_vals[i - 1] - 1.0 for i in range(1, len(port_vals))]
+    )
+    spy_ret = np.array(
+        [spy_vals[i] / spy_vals[i - 1] - 1.0 for i in range(1, len(spy_vals))]
+    )
+    ret_dates = dates[1:]
+    beta, alpha_ann, corr = _rolling_regression(port_ret, spy_ret, window)
+
+    def _mean_finite(arr: Any) -> float:
+        vals = [v for v in arr if v == v]  # filter NaN
+        return float(sum(vals) / len(vals)) if vals else float("nan")
+
+    mean_beta = _mean_finite(beta)
+    mean_alpha = _mean_finite(alpha_ann)
+    mean_corr = _mean_finite(corr)
+
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+        subplot_titles=(
+            f"Rolling Beta (mean: {mean_beta:+.2f})",
+            f"Rolling Alpha — Annualized (mean: {mean_alpha:+.2%})",
+            f"Rolling Correlation (mean: {mean_corr:+.2f})",
+        ),
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=ret_dates, y=beta, name="Beta",
+            line=dict(color=_ACCENT_BLUE, width=1.5),
+            hovertemplate="%{x}<br>β=%{y:.3f}<extra></extra>",
+        ), row=1, col=1,
+    )
+    fig.add_hline(y=1.0, line=dict(color=_ACCENT_GOLD, dash="dash", width=1), row=1, col=1)
+    fig.add_trace(
+        go.Scatter(
+            x=ret_dates, y=alpha_ann, name="Alpha (ann.)",
+            line=dict(color=_ACCENT_GREEN, width=1.5),
+            hovertemplate="%{x}<br>α=%{y:+.2%}<extra></extra>",
+        ), row=2, col=1,
+    )
+    fig.add_hline(y=0.0, line=dict(color=_ACCENT_GOLD, dash="dash", width=1), row=2, col=1)
+    fig.add_trace(
+        go.Scatter(
+            x=ret_dates, y=corr, name="Correlation",
+            line=dict(color=_ACCENT_BLUE, width=1.5, dash="dot"),
+            hovertemplate="%{x}<br>ρ=%{y:.3f}<extra></extra>",
+        ), row=3, col=1,
+    )
+    fig.add_hline(y=0.0, line=dict(color=_ACCENT_GOLD, dash="dash", width=1), row=3, col=1)
+
+    fig.update_layout(
+        title=dict(
+            text=f"Market Relationship — Rolling {window}-Day OLS vs {_BENCHMARK_TICKER}",
+            font=dict(size=15, color=_TEXT),
+        ),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        showlegend=False,
+        height=600,
+        margin=dict(t=70, b=40, l=60, r=20),
+    )
+    fig.update_xaxes(gridcolor="#222", zerolinecolor="#444")
+    fig.update_yaxes(gridcolor="#222", zerolinecolor="#444")
+    fig.update_yaxes(title_text="β", row=1, col=1)
+    fig.update_yaxes(title_text="α (ann.)", tickformat=".1%", row=2, col=1)
+    fig.update_yaxes(title_text="ρ", row=3, col=1)
+    fig.update_xaxes(title_text="Date", row=3, col=1)
+    return fig
+
+
+def _compute_capture_ratios(equity_df: Any) -> dict[str, float] | None:
+    """Compute up-capture, down-capture, ratio and positive-month % vs benchmark.
+
+    Monthly compounded returns are classified by the sign of the benchmark
+    return in the same month. ``up_capture`` is the ratio of the mean
+    portfolio return to the mean benchmark return across ``spy > 0`` months,
+    expressed as a percentage (``85.0`` means the portfolio captures 85% of
+    the benchmark's average upside). ``down_capture`` is the analogous ratio
+    on ``spy < 0`` months (``< 100`` means the portfolio loses less on the
+    downside). ``up_down_ratio`` is ``up_capture / down_capture`` (also in
+    %): higher means the portfolio behaves asymmetrically in its favor.
+
+    Args:
+        equity_df: Polars DataFrame with columns ``date``, ``portfolio_value``,
+            ``benchmark_value``.
+
+    Returns:
+        Dict with ``up_capture``, ``down_capture``, ``up_down_ratio``,
+        ``positive_month_pct`` (portfolio), ``benchmark_positive_month_pct``
+        and monthly counts, or ``None`` if fewer than 2 months are available.
+        Individual values may be ``NaN`` when the corresponding subset is
+        empty or degenerate (e.g. no down months in a bull-only window).
+    """
+    import numpy as np
+
+    monthly = _compute_monthly_returns(equity_df)
+    if monthly.height < 2:
+        return None
+
+    port = monthly["port_ret"].to_numpy()
+    spy = monthly["spy_ret"].to_numpy()
+
+    up_mask = spy > 0
+    dn_mask = spy < 0
+    n_up = int(up_mask.sum())
+    n_dn = int(dn_mask.sum())
+
+    def _safe_mean(arr: Any) -> float:
+        return float(arr.mean()) if arr.size > 0 else float("nan")
+
+    port_up = _safe_mean(port[up_mask])
+    port_dn = _safe_mean(port[dn_mask])
+    spy_up = _safe_mean(spy[up_mask])
+    spy_dn = _safe_mean(spy[dn_mask])
+
+    up_capture = (port_up / spy_up * 100.0) if np.isfinite(spy_up) and spy_up != 0.0 else float("nan")
+    down_capture = (port_dn / spy_dn * 100.0) if np.isfinite(spy_dn) and spy_dn != 0.0 else float("nan")
+
+    if np.isfinite(up_capture) and np.isfinite(down_capture) and down_capture != 0.0:
+        up_down_ratio = up_capture / down_capture * 100.0
+    else:
+        up_down_ratio = float("nan")
+
+    total = len(port)
+    positive_month_pct = float((port > 0).sum()) / total * 100.0
+    benchmark_positive_month_pct = float((spy > 0).sum()) / total * 100.0
+
+    return {
+        "up_capture": float(up_capture),
+        "down_capture": float(down_capture),
+        "up_down_ratio": float(up_down_ratio),
+        "positive_month_pct": positive_month_pct,
+        "benchmark_positive_month_pct": benchmark_positive_month_pct,
+        "n_up_months": n_up,
+        "n_down_months": n_dn,
+        "n_total_months": total,
+    }
+
+
+def _chart_capture_ratios(equity_df: Any) -> go.Figure | None:
+    """Bar chart with up-capture, down-capture, up/down ratio and positive month %.
+
+    Each bar is expressed as a percentage. A horizontal dashed line at 100%
+    marks the benchmark baseline: bars above the line capture more upside,
+    bars below capture less downside. Colors are semantic (green = favorable,
+    red = adverse) relative to each metric's preferred direction.
+
+    Args:
+        equity_df: Polars DataFrame with ``date``, ``portfolio_value``,
+            ``benchmark_value``.
+
+    Returns:
+        Plotly Figure, or ``None`` if fewer than 2 months of data are
+        available.
+    """
+    ratios = _compute_capture_ratios(equity_df)
+    if ratios is None:
+        return None
+
+    labels = ["Up-Capture", "Down-Capture", "Up/Down Ratio", "Positive Month %"]
+    values = [
+        ratios["up_capture"],
+        ratios["down_capture"],
+        ratios["up_down_ratio"],
+        ratios["positive_month_pct"],
+    ]
+
+    def _favorable(metric: str, v: float) -> bool:
+        if v != v:  # NaN
+            return False
+        if metric == "Up-Capture":
+            return v > 100.0
+        if metric == "Down-Capture":
+            return v < 100.0
+        if metric == "Up/Down Ratio":
+            return v > 100.0
+        if metric == "Positive Month %":
+            return v > 50.0
+        return False
+
+    colors = [
+        "#888888" if v != v else (_ACCENT_GREEN if _favorable(m, v) else _ACCENT_RED)
+        for m, v in zip(labels, values)
+    ]
+    text = [("n/a" if v != v else f"{v:.1f}%") for v in values]
+
+    hover = (
+        f"Up months: {ratios['n_up_months']} | "
+        f"Down months: {ratios['n_down_months']} | "
+        f"Total: {ratios['n_total_months']}"
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=labels,
+        y=values,
+        marker=dict(color=colors, line=dict(color="#111", width=1)),
+        text=text,
+        textposition="outside",
+        textfont=dict(color=_TEXT, size=13),
+        hovertemplate="<b>%{x}</b><br>%{y:.1f}%<br>" + hover + "<extra></extra>",
+        showlegend=False,
+    ))
+    fig.add_hline(
+        y=100.0,
+        line=dict(color=_ACCENT_GOLD, dash="dash", width=1),
+        annotation_text=f"{_BENCHMARK_TICKER} baseline (100%)",
+        annotation_position="top right",
+        annotation_font=dict(color=_ACCENT_GOLD, size=11),
+    )
+
+    finite_vals = [v for v in values if v == v]
+    y_top = max(finite_vals + [110.0]) * 1.20 if finite_vals else 120.0
+    y_bottom = min(finite_vals + [0.0]) - 15.0 if finite_vals else -15.0
+
+    fig.update_layout(
+        title=dict(
+            text=(
+                f"Up / Down Capture vs {_BENCHMARK_TICKER} "
+                f"(n={ratios['n_total_months']} months: "
+                f"{ratios['n_up_months']} up / {ratios['n_down_months']} down)"
+            ),
+            font=dict(size=15, color=_TEXT),
+        ),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        yaxis=dict(
+            title="% of benchmark",
+            gridcolor="#222",
+            zerolinecolor="#444",
+            range=[y_bottom, y_top],
+        ),
+        xaxis=dict(gridcolor="#222", zerolinecolor="#444"),
+        height=420,
+        margin=dict(t=60, b=50, l=60, r=20),
+        bargap=0.35,
+    )
+    return fig
+
+
+def _chart_capm_scatter(equity_df: Any) -> go.Figure | None:
+    """CAPM scatter of daily portfolio vs benchmark returns with OLS line.
+
+    Each point is a trading day: x = benchmark daily return, y = portfolio
+    daily return. A single full-sample OLS line visualizes
+    ``R_p = α + β · R_m``. Slope is the static beta; intercept is the daily
+    alpha, annualized as ``α_daily × 252`` for the legend and annotation.
+    R² is computed from the correlation between the two return series.
+
+    Args:
+        equity_df: Polars DataFrame with ``date``, ``portfolio_value``,
+            ``benchmark_value``.
+
+    Returns:
+        Plotly Figure, or ``None`` if fewer than 3 daily returns are
+        available or the benchmark has zero variance.
+    """
+    import numpy as np
+
+    port_vals = equity_df["portfolio_value"].to_list()
+    spy_vals = equity_df["benchmark_value"].to_list()
+    if len(port_vals) < 4:
+        return None
+
+    port_ret = np.array(
+        [port_vals[i] / port_vals[i - 1] - 1.0 for i in range(1, len(port_vals))]
+    )
+    spy_ret = np.array(
+        [spy_vals[i] / spy_vals[i - 1] - 1.0 for i in range(1, len(spy_vals))]
+    )
+
+    if spy_ret.var() <= 0.0:
+        return None
+
+    slope, intercept = np.polyfit(spy_ret, port_ret, 1)
+    beta = float(slope)
+    alpha_daily = float(intercept)
+    alpha_annual = alpha_daily * 252.0
+    r_squared = float(np.corrcoef(spy_ret, port_ret)[0, 1] ** 2)
+
+    xs = np.linspace(float(spy_ret.min()), float(spy_ret.max()), 100)
+    ys = slope * xs + intercept
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=spy_ret,
+        y=port_ret,
+        mode="markers",
+        marker=dict(size=4, opacity=0.45, color=_ACCENT_BLUE),
+        name="Daily returns",
+        hovertemplate=(
+            f"{_BENCHMARK_TICKER}: %{{x:+.2%}}<br>"
+            "Portfolio: %{y:+.2%}<extra></extra>"
+        ),
+        showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=xs,
+        y=ys,
+        mode="lines",
+        line=dict(color=_ACCENT_GOLD, width=2),
+        name=f"OLS fit (β={beta:.2f}, α_ann={alpha_annual:+.2%})",
+        hoverinfo="skip",
+    ))
+    fig.add_hline(y=0.0, line=dict(color="#444", width=1))
+    fig.add_vline(x=0.0, line=dict(color="#444", width=1))
+
+    fig.add_annotation(
+        text=(
+            f"β = {beta:.3f}<br>"
+            f"α (ann.) = {alpha_annual:+.2%}<br>"
+            f"R² = {r_squared:.3f}<br>"
+            f"n = {len(port_ret):,}"
+        ),
+        xref="paper",
+        yref="paper",
+        x=0.02,
+        y=0.98,
+        xanchor="left",
+        yanchor="top",
+        showarrow=False,
+        bgcolor="rgba(14,17,23,0.85)",
+        bordercolor=_ACCENT_GOLD,
+        borderwidth=1,
+        font=dict(color=_TEXT, size=12),
+        align="left",
+    )
+
+    fig.update_layout(
+        title=dict(
+            text=f"CAPM Scatter — Portfolio vs {_BENCHMARK_TICKER} Daily Returns",
+            font=dict(size=15, color=_TEXT),
+        ),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        xaxis=dict(
+            title=f"{_BENCHMARK_TICKER} daily return",
+            tickformat=".1%",
+            gridcolor="#222",
+            zerolinecolor="#444",
+        ),
+        yaxis=dict(
+            title="Portfolio daily return",
+            tickformat=".1%",
+            gridcolor="#222",
+            zerolinecolor="#444",
+        ),
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(color=_TEXT, size=11),
+            x=0.98,
+            y=0.02,
+            xanchor="right",
+            yanchor="bottom",
+        ),
+        showlegend=True,
+        height=500,
+        margin=dict(t=60, b=50, l=60, r=20),
+    )
+    return fig
+
+
 def _chart_rolling_sharpe(equity_df: Any, window: int = 252) -> go.Figure | None:
     """Rolling Sharpe ratio chart. Returns None if insufficient data."""
     import math
@@ -402,6 +1534,1101 @@ def _chart_rolling_sharpe(equity_df: Any, window: int = 252) -> go.Figure | None
         height=400,
         margin=dict(t=50, b=40, l=60, r=20),
     )
+    return fig
+
+
+def _compute_turnover_per_rebalance(weights_df: Any) -> Any:
+    """Collapse the long-format weights DataFrame to one row per rebalance date.
+
+    ``turnover`` and ``costs`` are produced by the walk-forward backtester as
+    portfolio-level scalars per rebalance event and replicated across every
+    ticker row sharing that date. This helper picks the first row per date
+    and keeps only dates where a real rebalance happened
+    (``turnover > 0``).
+
+    Args:
+        weights_df: Long-format Polars DataFrame with at least ``date``,
+            ``turnover``, ``costs`` columns.
+
+    Returns:
+        Polars DataFrame with columns ``date``, ``turnover``, ``costs``,
+        sorted by date. ``turnover`` is in fractional units (sum of
+        ``|Δw|`` across tickers).
+    """
+    import polars as pl
+
+    return (
+        weights_df
+        .group_by("date")
+        .agg([
+            pl.col("turnover").first().alias("turnover"),
+            pl.col("costs").first().alias("costs"),
+        ])
+        .filter(pl.col("turnover") > 0.0)
+        .sort("date")
+    )
+
+
+def _reconstruct_gross_equity(equity_df: Any, weights_df: Any) -> Any:
+    """Reconstruct a counterfactual gross-equity series (zero transaction costs).
+
+    At each rebalance day ``r`` the walk-forward backtester deducts a dollar
+    cost ``c_r`` from the start-of-day portfolio value ``sod_r`` *before* the
+    day's drift is applied. End-of-day net equity is therefore
+
+    .. code-block:: text
+
+        net[r] = (sod[r] - c_r) * (1 + drift[r])
+
+    where ``sod[r] ≈ net[r-1]``. The counterfactual gross portfolio pays no
+    costs, so its drift is the same but its base is ``sod[r]``:
+
+    .. code-block:: text
+
+        gross_factor[t] = Π_{r ≤ t}  sod[r] / (sod[r] - c_r)
+        gross[t]        = net[t] * gross_factor[t]
+
+    This identity is exact under the backtester's accounting; it does not
+    require re-running the simulation.
+
+    Args:
+        equity_df: Polars DataFrame with ``date`` and ``portfolio_value``.
+        weights_df: Long-format weights DataFrame with ``date`` and ``costs``.
+
+    Returns:
+        ``equity_df`` sorted by date with an additional
+        ``portfolio_value_gross`` column. If ``costs`` is missing or all
+        zeros, ``portfolio_value_gross`` equals ``portfolio_value``.
+    """
+    import polars as pl
+
+    eq = equity_df.sort("date")
+    if "costs" not in weights_df.columns:
+        return eq.with_columns(
+            pl.col("portfolio_value").alias("portfolio_value_gross")
+        )
+
+    costs_per_date = (
+        weights_df
+        .group_by("date")
+        .agg(pl.col("costs").first().alias("_cost"))
+    )
+    joined = (
+        eq.with_columns(pl.col("portfolio_value").shift(1).alias("_sod"))
+        .join(costs_per_date, on="date", how="left")
+        .with_columns(pl.col("_cost").fill_null(0.0))
+    )
+
+    factor = 1.0
+    factors: list[float] = []
+    for row in joined.iter_rows(named=True):
+        sod = row["_sod"]
+        cost = row["_cost"] or 0.0
+        if sod is not None and sod > 0.0 and cost > 0.0 and sod > cost:
+            factor *= sod / (sod - cost)
+        factors.append(factor)
+
+    return (
+        joined.with_columns(pl.Series("_factor", factors))
+        .with_columns(
+            (pl.col("portfolio_value") * pl.col("_factor"))
+            .alias("portfolio_value_gross")
+        )
+        .drop(["_sod", "_cost", "_factor"])
+    )
+
+
+def _compute_effective_n(weights_row: Any) -> float:
+    """Herfindahl-based effective number of positions (cash counts as 1 slot).
+
+    ``Effective N = 1 / Σ w_i²`` where the sum is taken over the supplied
+    ticker weights *plus* an implicit cash position ``cash = max(0, 1 - Σw)``.
+    Counting cash as a slot keeps the metric bounded and intuitive: a
+    portfolio that is 50% cash + 1 stock returns 2, and a fully-invested
+    uniform-N portfolio returns N.
+
+    Args:
+        weights_row: 1-D array-like of non-negative ticker weights (long-only).
+            Zeros are allowed and contribute nothing to HHI.
+
+    Returns:
+        Effective number of positions (``float``); ``NaN`` if the full
+        vector (including cash) sums to zero.
+    """
+    import numpy as np
+
+    w = np.asarray(list(weights_row), dtype=float)
+    w = w[w > 0.0]
+    cash = max(0.0, 1.0 - float(w.sum()))
+    hhi = cash * cash + float(np.sum(w * w))
+    if hhi <= 0.0:
+        return float("nan")
+    return 1.0 / hhi
+
+
+def _compute_gini(weights_row: Any) -> float:
+    """Gini coefficient of the portfolio weight vector.
+
+    Zero weights are dropped; implicit cash (``1 - Σw``) is appended as a
+    position *only when strictly positive*, so a fully-invested uniform-N
+    portfolio correctly returns ``Gini = 0`` instead of being penalized for
+    having zero cash.
+
+    ``0`` = all positions equal (including cash, when present).
+    ``(n-1)/n`` = single position absorbs everything.
+
+    Args:
+        weights_row: 1-D array-like of non-negative ticker weights.
+
+    Returns:
+        Gini coefficient in ``[0, 1)`` or ``NaN`` if the vector is empty or
+        sums to zero.
+    """
+    import numpy as np
+
+    w = np.asarray(list(weights_row), dtype=float)
+    w = w[w > 0.0]
+    cash = max(0.0, 1.0 - float(w.sum()))
+    if cash > 0.0:
+        w = np.concatenate([w, np.array([cash])])
+    if w.size == 0 or w.sum() == 0.0:
+        return float("nan")
+    w = np.sort(w)
+    n = w.size
+    cum = np.cumsum(w)
+    return float(
+        (2.0 * float(np.sum(np.arange(1, n + 1) * w)) - (n + 1) * float(cum[-1]))
+        / (n * float(cum[-1]))
+    )
+
+
+def _chart_concentration_evolution(weights_df: Any) -> go.Figure | None:
+    """Dual-axis time series: Effective N (left) and Gini coefficient (right).
+
+    One point per rebalance date sourced from the long-format weights
+    parquet. Cash is treated per the semantics of ``_compute_effective_n``
+    (counted as a slot) and ``_compute_gini`` (appended only when positive).
+    A dotted reference line at ``Effective N = 1 / 0.06 ≈ 16.67`` marks
+    the equivalent number of positions when every slot sits at the HRP
+    ``max_weight = 0.06`` cap — the book crosses above this line whenever
+    weights are distributed more evenly than the cap would force.
+
+    Args:
+        weights_df: Long-format Polars DataFrame with at least ``date`` and
+            ``weight`` columns.
+
+    Returns:
+        Plotly Figure, or ``None`` if the weight history is missing or empty.
+    """
+    import polars as pl
+    from plotly.subplots import make_subplots
+
+    if weights_df is None or "weight" not in weights_df.columns:
+        return None
+
+    per_date = (
+        weights_df
+        .group_by("date")
+        .agg(pl.col("weight").alias("weights_list"))
+        .sort("date")
+    )
+    if per_date.height == 0:
+        return None
+
+    dates = per_date["date"].to_list()
+    eff_ns: list[float] = []
+    ginis: list[float] = []
+    for row in per_date.iter_rows(named=True):
+        w = row["weights_list"]
+        eff_ns.append(_compute_effective_n(w))
+        ginis.append(_compute_gini(w))
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(
+        go.Scatter(
+            x=dates, y=eff_ns,
+            name="Effective N",
+            mode="lines+markers",
+            line=dict(color=_ACCENT_BLUE, width=1.8),
+            marker=dict(size=4),
+            hovertemplate=(
+                "%{x|%Y-%m-%d}<br>Effective N: %{y:.2f}<extra></extra>"
+            ),
+        ),
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=dates, y=ginis,
+            name="Gini",
+            mode="lines+markers",
+            line=dict(color=_ACCENT_GOLD, width=1.5, dash="dash"),
+            marker=dict(size=4),
+            hovertemplate=(
+                "%{x|%Y-%m-%d}<br>Gini: %{y:.3f}<extra></extra>"
+            ),
+        ),
+        secondary_y=True,
+    )
+
+    max_weight_ref = 1.0 / 0.06
+    fig.add_shape(
+        type="line",
+        xref="paper", x0=0.0, x1=1.0,
+        yref="y",
+        y0=max_weight_ref, y1=max_weight_ref,
+        line=dict(color="#666", dash="dot", width=1),
+    )
+    fig.add_annotation(
+        text=(
+            f"Equivalent N at HRP max_weight=0.06 ({max_weight_ref:.1f})"
+        ),
+        xref="paper", yref="y",
+        x=0.98, y=max_weight_ref,
+        showarrow=False,
+        font=dict(color="#888", size=10),
+        xanchor="right", yanchor="bottom",
+    )
+
+    fig.update_layout(
+        title=dict(
+            text="Portfolio Concentration Over Time",
+            font=dict(size=15, color=_TEXT),
+        ),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(color=_TEXT, size=11),
+            x=0.01, y=0.99,
+            xanchor="left", yanchor="top",
+        ),
+        height=450,
+        margin=dict(t=60, b=40, l=60, r=60),
+        hovermode="x unified",
+    )
+    fig.update_xaxes(title_text="Date", gridcolor="#222", zerolinecolor="#444")
+    fig.update_yaxes(
+        title_text="Effective N (1 / Σw²)",
+        secondary_y=False, gridcolor="#222", zerolinecolor="#444",
+    )
+    fig.update_yaxes(
+        title_text="Gini coefficient",
+        secondary_y=True, range=[0.0, 1.0], showgrid=False,
+    )
+    return fig
+
+
+def _compute_contribution_per_ticker(
+    weights_df: Any, returns_df: Any
+) -> dict[str, float]:
+    """Additive per-ticker contribution to total portfolio return (pp).
+
+    For every rebalance interval ``[r, r_next]`` the contribution of
+    ticker ``i`` is ``w_r[i] * (Π(1 + r_{i,d}) - 1)`` — i.e. the weight set
+    at rebalance ``r`` times the compound simple return of ticker ``i``
+    until the next rebalance (or the end of the backtest). Summing over
+    intervals gives the additive attribution to total portfolio return.
+
+    The sum across tickers approximates total realized portfolio return
+    within a few percentage points because cash carry, transaction costs
+    and across-interval compounding are not attributed to any ticker
+    (this is standard for Brinson-style attribution).
+
+    Args:
+        weights_df: Long-format Polars DataFrame with at least ``date``,
+            ``ticker``, ``weight`` (rows for non-zero rebalance allocations).
+        returns_df: Wide Polars DataFrame with a ``date`` column and one
+            column per ticker holding daily simple returns.
+
+    Returns:
+        Mapping ``{ticker: contribution_pp}`` in percentage points. Tickers
+        with exactly zero net contribution are omitted. Empty dict when
+        either input is missing the required columns.
+    """
+    import numpy as np
+    import polars as pl
+
+    if weights_df is None or returns_df is None:
+        return {}
+    if "weight" not in weights_df.columns or "ticker" not in weights_df.columns:
+        return {}
+    if "date" not in returns_df.columns:
+        return {}
+
+    rebalance_dates = (
+        weights_df.sort("date")["date"].unique(maintain_order=True).to_list()
+    )
+    if not rebalance_dates:
+        return {}
+
+    returns_sorted = returns_df.sort("date")
+    return_dates = returns_sorted["date"].to_list()
+    if not return_dates:
+        return {}
+    return_tickers = set(returns_sorted.columns) - {"date"}
+
+    contributions: dict[str, float] = {}
+    for i, r_date in enumerate(rebalance_dates):
+        r_next = (
+            rebalance_dates[i + 1]
+            if i + 1 < len(rebalance_dates)
+            else return_dates[-1]
+        )
+        interval = returns_sorted.filter(
+            (pl.col("date") > r_date) & (pl.col("date") <= r_next)
+        )
+        if interval.height == 0:
+            continue
+
+        weights_row = weights_df.filter(pl.col("date") == r_date)
+        for w_row in weights_row.iter_rows(named=True):
+            ticker = w_row["ticker"]
+            if ticker not in return_tickers:
+                continue
+            weight = float(w_row["weight"])
+            if weight == 0.0:
+                continue
+            rets = interval[ticker].to_numpy()
+            rets = np.where(np.isfinite(rets), rets, 0.0)
+            if rets.size == 0:
+                continue
+            compound = float(np.prod(1.0 + rets) - 1.0)
+            contributions[ticker] = (
+                contributions.get(ticker, 0.0) + weight * compound
+            )
+
+    return {t: v * 100.0 for t, v in contributions.items() if v != 0.0}
+
+
+def _chart_contribution_waterfall(
+    contributions: dict[str, float],
+    top_n: int = 15,
+) -> go.Figure | None:
+    """Waterfall of per-ticker contribution (pp): Start → top_n → Others → Total.
+
+    Selection of the top-N is by absolute contribution so that large
+    detractors also surface instead of being hidden in the bucket.
+    Displayed order within the top-N is signed-descending so the story
+    reads left-to-right from biggest positive to biggest negative.
+
+    Args:
+        contributions: Mapping ``ticker → contribution_pp`` (produced by
+            :func:`_compute_contribution_per_ticker`).
+        top_n: Number of tickers to surface individually. Defaults to 15.
+
+    Returns:
+        Plotly Figure, or ``None`` if ``contributions`` is empty.
+    """
+    if not contributions:
+        return None
+
+    by_abs = sorted(contributions.items(), key=lambda kv: -abs(kv[1]))
+    top = by_abs[:top_n]
+    rest = by_abs[top_n:]
+    top.sort(key=lambda kv: -kv[1])
+
+    top_labels = [t for t, _ in top]
+    top_values = [float(v) for _, v in top]
+    others_value = float(sum(v for _, v in rest)) if rest else 0.0
+    total_value = float(sum(v for _, v in by_abs))
+
+    x_labels: list[str] = ["Start"] + top_labels
+    measures: list[str] = ["absolute"] + ["relative"] * len(top_labels)
+    y_vals: list[float] = [0.0] + top_values
+    text_vals: list[str] = [""] + [f"{v:+.2f}pp" for v in top_values]
+
+    if rest:
+        x_labels.append(f"Others ({len(rest)})")
+        measures.append("relative")
+        y_vals.append(others_value)
+        text_vals.append(f"{others_value:+.2f}pp")
+
+    x_labels.append("Total")
+    measures.append("total")
+    y_vals.append(total_value)
+    text_vals.append(f"{total_value:+.2f}pp")
+
+    fig = go.Figure(go.Waterfall(
+        x=x_labels,
+        measure=measures,
+        y=y_vals,
+        text=text_vals,
+        textposition="outside",
+        textfont=dict(color=_TEXT, size=11),
+        connector=dict(line=dict(color="#555", dash="dot", width=1)),
+        increasing=dict(marker=dict(color=_ACCENT_GREEN)),
+        decreasing=dict(marker=dict(color=_ACCENT_RED)),
+        totals=dict(marker=dict(color=_ACCENT_BLUE)),
+        hovertemplate="<b>%{x}</b><br>%{y:+.3f}pp<extra></extra>",
+    ))
+
+    fig.update_layout(
+        title=dict(
+            text=(
+                "Return Attribution — Additive Contribution to Total Return "
+                f"(sum: {total_value:+.2f}pp)"
+            ),
+            font=dict(size=15, color=_TEXT),
+        ),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        xaxis=dict(
+            title="",
+            tickangle=-40,
+            gridcolor="#222",
+            zerolinecolor="#444",
+        ),
+        yaxis=dict(
+            title="Contribution (pp)",
+            gridcolor="#222",
+            zerolinecolor="#444",
+        ),
+        showlegend=False,
+        height=520,
+        margin=dict(t=60, b=100, l=60, r=20),
+    )
+    return fig
+
+
+def _chart_cpcv_spaghetti(
+    paths_df: Any,
+    config_filter: str | None = None,
+) -> go.Figure | None:
+    """CPCV-OOS equity spaghetti — 15 individual paths + IQR band + median.
+
+    Each path is rendered as a thin semi-transparent line; the cross-path
+    25th/50th/75th percentiles at every date are overlaid as a shaded band
+    with a bold median line. Tightly clustered paths = low path-dependency
+    = robust configuration. The chart expects paths already normalised to
+    the same baseline (see :meth:`ValidationResult.to_paths_frame`).
+
+    Args:
+        paths_df: Long-format Polars DataFrame with columns ``config``,
+            ``path_id``, ``date``, ``equity``, ``sharpe``.
+        config_filter: Optional config name. When the parquet holds
+            multiple configs, plot only rows where ``config == filter``.
+            Defaults to the first distinct config if omitted.
+
+    Returns:
+        Plotly Figure, or ``None`` if the input is empty or missing
+        required columns.
+    """
+    import polars as pl
+
+    if paths_df is None:
+        return None
+    required = {"path_id", "date", "equity"}
+    if not required.issubset(set(paths_df.columns)):
+        return None
+    if paths_df.height == 0:
+        return None
+
+    if "config" in paths_df.columns:
+        if config_filter is None:
+            config_filter = (
+                paths_df["config"].unique(maintain_order=True).to_list()[0]
+            )
+        df = paths_df.filter(pl.col("config") == config_filter)
+    else:
+        df = paths_df
+        config_filter = config_filter or "cpcv"
+
+    if df.height == 0:
+        return None
+
+    path_ids = sorted(df["path_id"].unique().to_list())
+    n_paths = len(path_ids)
+
+    sharpes: list[float] = []
+    if "sharpe" in df.columns:
+        sharpe_per_path = (
+            df.group_by("path_id")
+            .agg(pl.col("sharpe").first())
+            .sort("path_id")
+        )
+        sharpes = [
+            float(v)
+            for v in sharpe_per_path["sharpe"].to_list()
+            if v is not None and v == v
+        ]
+
+    fig = go.Figure()
+
+    for pid in path_ids:
+        path = df.filter(pl.col("path_id") == pid).sort("date")
+        fig.add_trace(go.Scatter(
+            x=path["date"].to_list(),
+            y=path["equity"].to_list(),
+            mode="lines",
+            line=dict(color=_ACCENT_BLUE, width=1),
+            opacity=0.28,
+            name=f"Path {pid}",
+            hovertemplate=(
+                f"Path {pid}<br>%{{x|%Y-%m-%d}}<br>"
+                "Equity: %{y:.3f}<extra></extra>"
+            ),
+            showlegend=False,
+        ))
+
+    agg = (
+        df.group_by("date")
+        .agg([
+            pl.col("equity").quantile(0.25).alias("q25"),
+            pl.col("equity").quantile(0.50).alias("med"),
+            pl.col("equity").quantile(0.75).alias("q75"),
+        ])
+        .sort("date")
+    )
+    agg_dates = agg["date"].to_list()
+
+    fig.add_trace(go.Scatter(
+        x=agg_dates,
+        y=agg["q75"].to_list(),
+        mode="lines",
+        line=dict(color="rgba(74,144,217,0)"),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=agg_dates,
+        y=agg["q25"].to_list(),
+        mode="lines",
+        line=dict(color="rgba(74,144,217,0)"),
+        fill="tonexty",
+        fillcolor="rgba(74,144,217,0.20)",
+        name="IQR 25–75%",
+        hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=agg_dates,
+        y=agg["med"].to_list(),
+        mode="lines",
+        line=dict(color=_ACCENT_GOLD, width=2.5),
+        name="Median",
+        hovertemplate=(
+            "Median<br>%{x|%Y-%m-%d}<br>Equity: %{y:.3f}<extra></extra>"
+        ),
+    ))
+
+    if sharpes:
+        sharpe_range = (
+            f"Sharpe range across paths: {min(sharpes):.2f} — "
+            f"{max(sharpes):.2f} (median {sorted(sharpes)[len(sharpes)//2]:.2f})"
+        )
+    else:
+        sharpe_range = "Sharpe per path not available in parquet"
+
+    fig.update_layout(
+        title=dict(
+            text=(
+                f"CPCV-OOS Path Distribution — {n_paths} combinatorial paths "
+                f"({config_filter})"
+            ),
+            font=dict(size=15, color=_TEXT),
+        ),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        xaxis=dict(
+            title="Date",
+            gridcolor="#222",
+            zerolinecolor="#444",
+        ),
+        yaxis=dict(
+            title="Equity (base 1.0)",
+            gridcolor="#222",
+            zerolinecolor="#444",
+        ),
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(color=_TEXT, size=11),
+            x=0.01, y=0.99,
+            xanchor="left", yanchor="top",
+        ),
+        height=500,
+        margin=dict(t=70, b=50, l=60, r=20),
+        hovermode="closest",
+    )
+    fig.add_annotation(
+        text=sharpe_range,
+        xref="paper", yref="paper",
+        x=0.99, y=0.02,
+        xanchor="right", yanchor="bottom",
+        showarrow=False,
+        font=dict(color="#AAAAAA", size=11),
+        bgcolor="rgba(14,17,23,0.7)",
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Phase 11 — Sharpe violin across CPCV paths
+# ---------------------------------------------------------------------------
+
+
+def _compute_sharpe_per_path(paths_df: Any) -> list[float]:
+    """Extract one Sharpe ratio per CPCV path from a long-format paths frame.
+
+    The ``sharpe`` column in ``cpcv_paths.parquet`` is duplicated across
+    every row of the same ``path_id``; this helper collapses the frame
+    back to one value per path and drops non-finite entries so downstream
+    statistics (mean, std, PSR) do not blow up.
+
+    Args:
+        paths_df: Polars DataFrame with at least ``path_id`` and
+            ``sharpe`` columns.
+
+    Returns:
+        Sharpe ratios sorted by ``path_id``. Empty list when the frame is
+        missing the required columns, is empty, or every value is NaN.
+    """
+    import math
+
+    import polars as pl
+
+    if paths_df is None:
+        return []
+    if paths_df.height == 0:
+        return []
+    if not {"path_id", "sharpe"}.issubset(set(paths_df.columns)):
+        return []
+
+    agg = (
+        paths_df.group_by("path_id")
+        .agg(pl.col("sharpe").first().alias("sharpe"))
+        .sort("path_id")
+    )
+    out: list[float] = []
+    for value in agg["sharpe"].to_list():
+        if value is None:
+            continue
+        fv = float(value)
+        if math.isnan(fv) or math.isinf(fv):
+            continue
+        out.append(fv)
+    return out
+
+
+def _expected_max_sharpe(sigma: float, n_trials: int) -> float | None:
+    """Expected maximum Sharpe across ``n_trials`` independent draws.
+
+    Euler–Mascheroni approximation for the max of standard normal variates,
+    scaled by ``sigma`` (the cross-sample Sharpe dispersion used as a
+    proxy for σ(SR)). Mirrors the core of Bailey & Lopez de Prado's
+    Deflated Sharpe Ratio formula. Returns ``None`` when the inputs are
+    degenerate so the caller can skip the reference line gracefully.
+
+    Args:
+        sigma: Standard deviation of Sharpe across candidate strategies
+            (typically the std across CPCV paths).
+        n_trials: Number of strategy configurations tested.
+
+    Returns:
+        Expected-maximum Sharpe in the same units as ``sigma``, or
+        ``None`` when ``n_trials < 2`` or ``sigma <= 0``.
+    """
+    import math
+
+    if n_trials is None or n_trials < 2:
+        return None
+    if sigma is None or sigma <= 0:
+        return None
+
+    euler_mascheroni = 0.5772156649
+    try:
+        z1 = _inv_normal_cdf_approx(1.0 - 1.0 / n_trials)
+        z2 = _inv_normal_cdf_approx(1.0 - 1.0 / (n_trials * math.e))
+    except ValueError:
+        return None
+    e_max_z = (1.0 - euler_mascheroni) * z1 + euler_mascheroni * z2
+    return float(sigma) * float(e_max_z)
+
+
+def _inv_normal_cdf_approx(p: float) -> float:
+    """Abramowitz & Stegun 26.2.23 approximation to the inverse normal CDF.
+
+    Same algorithm used in :func:`src.backtest.cpcv_oos._inv_normal_cdf`;
+    duplicated here so the dashboard does not import heavy modules at
+    startup. Accurate to ~4.5e-4 on ``(0, 1)``.
+    """
+    import math
+
+    if p <= 0.0:
+        return -10.0
+    if p >= 1.0:
+        return 10.0
+    if p < 0.5:
+        return -_inv_normal_cdf_approx(1.0 - p)
+    t = math.sqrt(-2.0 * math.log(1.0 - p))
+    c0, c1, c2 = 2.515517, 0.802853, 0.010328
+    d1, d2, d3 = 1.432788, 0.189269, 0.001308
+    return t - (c0 + c1 * t + c2 * t * t) / (
+        1.0 + d1 * t + d2 * t * t + d3 * t * t * t
+    )
+
+
+def _probabilistic_sharpe_ratio(
+    observed_sharpe: float,
+    n_obs: int,
+    sharpe_benchmark: float = 0.0,
+    skewness: float = 0.0,
+    kurtosis: float = 3.0,
+    periods_per_year: int = 252,
+) -> float | None:
+    """Probabilistic Sharpe Ratio (Bailey & Lopez de Prado, 2012).
+
+    Probability that the *true* annualised Sharpe exceeds
+    ``sharpe_benchmark`` given ``n_obs`` daily observations. Returns a
+    value in ``[0, 1]``; above 0.95 is the standard confidence level.
+
+    Args:
+        observed_sharpe: Annualised Sharpe realised on the test window.
+        n_obs: Number of daily return observations behind the Sharpe.
+        sharpe_benchmark: Annualised Sharpe to test against (default 0).
+        skewness: Sample skewness of the underlying returns.
+        kurtosis: Full sample kurtosis (normal = 3.0) of the returns.
+        periods_per_year: Annualisation factor.
+
+    Returns:
+        PSR probability in ``[0, 1]``, or ``None`` if the inputs are
+        insufficient to compute it (n_obs < 2 or zero SR variance).
+    """
+    import math
+
+    if n_obs is None or n_obs < 2:
+        return None
+
+    sr_daily = observed_sharpe / math.sqrt(periods_per_year)
+    bench_daily = sharpe_benchmark / math.sqrt(periods_per_year)
+
+    var_sr_daily = (
+        1.0
+        + 0.5 * sr_daily * sr_daily
+        - skewness * sr_daily
+        + (kurtosis - 3.0) / 4.0 * sr_daily * sr_daily
+    ) / n_obs
+    if var_sr_daily <= 0:
+        return None
+
+    z = (sr_daily - bench_daily) / math.sqrt(var_sr_daily)
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
+def _chart_sharpe_violin(
+    paths_df: Any,
+    oos_sharpe: float | None = None,
+    dsr_threshold: float | None = None,
+    psr: float | None = None,
+    n_trials: int | None = None,
+    config_filter: str | None = None,
+) -> go.Figure | None:
+    """Violin plot of per-path Sharpe ratios with statistical references.
+
+    Companion to the CPCV spaghetti (Phase 10): where the spaghetti shows
+    equity dispersion, the violin shows **where the Sharpe actually lands
+    across the 15 combinatorial paths**. Horizontal reference lines
+    contextualise the distribution:
+
+    - **DSR expected max (dashed grey):** the Sharpe a best-of-``n_trials``
+      noise strategy would produce under the Bailey & Lopez de Prado
+      approximation. The path distribution should sit clearly above it.
+    - **Walk-forward OOS (solid gold):** the single-path Sharpe realised
+      on the production backtest. Inside the IQR means the OOS run is
+      consistent with the CPCV cloud.
+
+    A side stats box surfaces path count, mean, std, % positive and the
+    Probabilistic Sharpe Ratio (PSR) for the walk-forward OOS Sharpe.
+
+    Args:
+        paths_df: Long-format Polars DataFrame with ``path_id`` and
+            ``sharpe`` columns (same schema as
+            :func:`_chart_cpcv_spaghetti`).
+        oos_sharpe: Walk-forward OOS Sharpe (annualised). ``None`` skips
+            the gold reference line.
+        dsr_threshold: Pre-computed DSR expected-max Sharpe. When
+            ``None`` and ``n_trials`` is provided, computed internally
+            from the path-Sharpe std.
+        psr: Pre-computed Probabilistic Sharpe Ratio (0..1). Shown in
+            the side stats when provided.
+        n_trials: Number of configurations the grid searched. Used to
+            derive ``dsr_threshold`` when it is not supplied explicitly.
+        config_filter: If the parquet holds multiple configs, only rows
+            matching this label are plotted. Defaults to the first
+            distinct config.
+
+    Returns:
+        Plotly Figure, or ``None`` when the paths frame is missing
+        required columns or has fewer than 2 valid Sharpes.
+    """
+    import statistics
+
+    import polars as pl
+
+    if paths_df is None:
+        return None
+    if not {"path_id", "sharpe"}.issubset(set(paths_df.columns)):
+        return None
+    if paths_df.height == 0:
+        return None
+
+    if "config" in paths_df.columns:
+        if config_filter is None:
+            config_filter = (
+                paths_df["config"].unique(maintain_order=True).to_list()[0]
+            )
+        df = paths_df.filter(pl.col("config") == config_filter)
+    else:
+        df = paths_df
+        config_filter = config_filter or "cpcv"
+
+    sharpes = _compute_sharpe_per_path(df)
+    if len(sharpes) < 2:
+        return None
+
+    n_paths = len(sharpes)
+    mean_sharpe = statistics.fmean(sharpes)
+    stdev = statistics.stdev(sharpes)
+    n_positive = sum(1 for s in sharpes if s > 0)
+    pct_positive = n_positive / n_paths
+
+    if dsr_threshold is None and n_trials is not None:
+        dsr_threshold = _expected_max_sharpe(stdev, int(n_trials))
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Violin(
+            y=sharpes,
+            name="CPCV paths",
+            box_visible=True,
+            meanline_visible=True,
+            points="all",
+            pointpos=0.0,
+            jitter=0.25,
+            line=dict(color=_ACCENT_BLUE, width=1.5),
+            fillcolor="rgba(74,144,217,0.25)",
+            marker=dict(
+                color=_ACCENT_BLUE,
+                size=7,
+                opacity=0.85,
+                line=dict(color=_DARK_BG, width=1),
+            ),
+            hovertemplate="Path Sharpe: %{y:.3f}<extra></extra>",
+            showlegend=False,
+        )
+    )
+
+    if dsr_threshold is not None:
+        fig.add_hline(
+            y=float(dsr_threshold),
+            line=dict(color="#AAAAAA", dash="dash", width=1.5),
+            annotation_text=f"DSR expected max = {float(dsr_threshold):.2f}",
+            annotation_position="top left",
+            annotation_font=dict(color="#AAAAAA", size=11),
+        )
+
+    if oos_sharpe is not None:
+        fig.add_hline(
+            y=float(oos_sharpe),
+            line=dict(color=_ACCENT_GOLD, dash="solid", width=2),
+            annotation_text=(
+                f"Walk-forward OOS = {float(oos_sharpe):.2f}"
+            ),
+            annotation_position="bottom left",
+            annotation_font=dict(color=_ACCENT_GOLD, size=11),
+        )
+
+    stats_lines = [
+        f"<b>Paths:</b> {n_paths}",
+        f"<b>Mean:</b> {mean_sharpe:.3f}",
+        f"<b>Std:</b> {stdev:.3f}",
+        f"<b>% positive:</b> {pct_positive:.0%}",
+    ]
+    if psr is not None:
+        stats_lines.append(f"<b>PSR:</b> {float(psr):.2f}")
+    stats_text = "<br>".join(stats_lines)
+    fig.add_annotation(
+        text=stats_text,
+        xref="paper", yref="paper",
+        x=0.99, y=0.99,
+        xanchor="right", yanchor="top",
+        showarrow=False,
+        font=dict(color=_TEXT, size=11),
+        bgcolor="rgba(14,17,23,0.8)",
+        bordercolor="#444",
+        borderwidth=1,
+        align="left",
+    )
+
+    fig.update_layout(
+        title=dict(
+            text=(
+                "Sharpe Distribution Across CPCV Paths — "
+                f"{n_paths} paths ({config_filter})"
+            ),
+            font=dict(size=15, color=_TEXT),
+        ),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        xaxis=dict(
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False,
+        ),
+        yaxis=dict(
+            title="Annualised Sharpe",
+            gridcolor="#222",
+            zerolinecolor="#444",
+        ),
+        height=460,
+        margin=dict(t=70, b=40, l=60, r=30),
+        showlegend=False,
+    )
+    return fig
+
+
+def _chart_turnover_and_costs(
+    equity_df: Any, weights_df: Any
+) -> go.Figure | None:
+    """Two-panel chart: turnover per rebalance + gross vs net equity.
+
+    Row 1 is a bar chart of per-rebalance turnover (as a percentage). Row 2
+    overlays the (reconstructed) gross equity index and the realized net
+    equity index, base-100 at t=0, with a red-shaded area marking the
+    cumulative cost drag. The title reports the total dollar cost paid and
+    the subtitle reports annualized drag in basis points per year (from the
+    CAGR gap).
+
+    Args:
+        equity_df: Polars DataFrame with ``date``, ``portfolio_value``.
+        weights_df: Long-format weights DataFrame with ``date``,
+            ``turnover``, ``costs``.
+
+    Returns:
+        Plotly Figure, or ``None`` if either input is missing required
+        columns or there are no rebalance events.
+    """
+    import polars as pl
+    from plotly.subplots import make_subplots
+
+    if equity_df is None or weights_df is None:
+        return None
+    required = {"date", "turnover", "costs"}
+    if not required.issubset(set(weights_df.columns)):
+        return None
+    if "portfolio_value" not in equity_df.columns:
+        return None
+
+    turnover_df = _compute_turnover_per_rebalance(weights_df)
+    if turnover_df.height == 0:
+        return None
+
+    gross_df = _reconstruct_gross_equity(equity_df, weights_df)
+
+    net_vals = gross_df["portfolio_value"].to_list()
+    gross_vals = gross_df["portfolio_value_gross"].to_list()
+    dates = gross_df["date"].to_list()
+    if not net_vals:
+        return None
+
+    base_net = float(net_vals[0])
+    base_gross = float(gross_vals[0])
+    if base_net <= 0 or base_gross <= 0:
+        return None
+
+    net_idx = [v / base_net * 100.0 for v in net_vals]
+    gross_idx = [v / base_gross * 100.0 for v in gross_vals]
+
+    total_cost_dollars = float(
+        weights_df.group_by("date")
+        .agg(pl.col("costs").first())
+        .select(pl.col("costs").sum())
+        .item()
+    )
+    n_days = len(dates)
+    n_years = n_days / 252.0 if n_days > 0 else 1.0
+
+    cagr_net = (net_idx[-1] / 100.0) ** (1.0 / n_years) - 1.0 if n_years > 0 else 0.0
+    cagr_gross = (gross_idx[-1] / 100.0) ** (1.0 / n_years) - 1.0 if n_years > 0 else 0.0
+    drag_bps = (cagr_gross - cagr_net) * 10000.0
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.10,
+        subplot_titles=(
+            f"Turnover per Rebalance ({turnover_df.height} events)",
+            f"Gross vs Net Equity (drag ≈ {drag_bps:+.1f} bps/year)",
+        ),
+        row_heights=[0.35, 0.65],
+    )
+
+    fig.add_trace(
+        go.Bar(
+            x=turnover_df["date"].to_list(),
+            y=[v * 100.0 for v in turnover_df["turnover"].to_list()],
+            marker=dict(color=_ACCENT_BLUE),
+            name="Turnover",
+            hovertemplate=(
+                "%{x|%Y-%m-%d}<br>Turnover: %{y:.1f}%<extra></extra>"
+            ),
+            showlegend=False,
+        ),
+        row=1, col=1,
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=dates, y=gross_idx, mode="lines",
+            line=dict(color=_ACCENT_GOLD, width=1.5, dash="dash"),
+            name="Gross (no costs)",
+            hovertemplate=(
+                "%{x|%Y-%m-%d}<br>Gross: %{y:.2f}<extra></extra>"
+            ),
+        ),
+        row=2, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=dates, y=net_idx, mode="lines",
+            line=dict(color=_ACCENT_BLUE, width=1.8),
+            name="Net (after costs)",
+            fill="tonexty",
+            fillcolor="rgba(229,57,53,0.15)",
+            hovertemplate=(
+                "%{x|%Y-%m-%d}<br>Net: %{y:.2f}<extra></extra>"
+            ),
+        ),
+        row=2, col=1,
+    )
+
+    fig.update_layout(
+        title=dict(
+            text=(
+                f"Trading Costs — Total ${total_cost_dollars:,.0f} paid "
+                f"over {n_years:.1f}y"
+            ),
+            font=dict(size=15, color=_TEXT),
+        ),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        font=dict(color=_TEXT),
+        showlegend=True,
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(color=_TEXT, size=11),
+            x=0.01, y=0.55,
+            xanchor="left", yanchor="top",
+        ),
+        height=620,
+        margin=dict(t=70, b=40, l=60, r=20),
+    )
+    fig.update_xaxes(gridcolor="#222", zerolinecolor="#444")
+    fig.update_yaxes(gridcolor="#222", zerolinecolor="#444")
+    fig.update_yaxes(title_text="Turnover (%)", row=1, col=1)
+    fig.update_yaxes(title_text="Index (base 100)", row=2, col=1)
+    fig.update_xaxes(title_text="Date", row=2, col=1)
     return fig
 
 
@@ -508,6 +2735,7 @@ def tab_benchmark(
     equity_df: Any | None,
     metrics: dict[str, float] | None,
     weights_df: Any | None,
+    ticker_returns_df: Any | None = None,
 ) -> None:
     """Render the Benchmark tab."""
     st.header("Benchmark — Walk-Forward Backtest")
@@ -568,6 +2796,62 @@ def tab_benchmark(
                 })
             st.dataframe(rows, width="stretch", hide_index=True)
 
+    # --- CPCV-OOS path distribution spaghetti (Phase 10)
+    cpcv_paths = load_cpcv_paths()
+    if cpcv_paths is not None:
+        st.subheader("CPCV-OOS Path Distribution")
+        fig_spaghetti = _chart_cpcv_spaghetti(cpcv_paths)
+        if fig_spaghetti is not None:
+            st.plotly_chart(fig_spaghetti, width="stretch")
+            st.caption(
+                "Each thin line is one of the 15 combinatorial CPCV-OOS "
+                "paths (champion config); the blue band is the 25–75% "
+                "percentile of equity across paths at every date, and the "
+                "gold line is the median. A tight cluster indicates low "
+                "path-dependency — the realized Sharpe did not come from "
+                "a lucky fold."
+            )
+
+        # --- Phase 11 — Sharpe distribution across CPCV paths
+        oos_sharpe = None
+        if metrics and "sharpe_ratio" in metrics:
+            try:
+                oos_sharpe = float(metrics["sharpe_ratio"])
+            except (TypeError, ValueError):
+                oos_sharpe = None
+
+        n_trials = load_cpcv_total_trials()
+
+        psr = None
+        if oos_sharpe is not None and equity_df is not None and equity_df.height >= 2:
+            n_obs_psr = int(equity_df.height - 1)
+            psr = _probabilistic_sharpe_ratio(oos_sharpe, n_obs_psr)
+
+        fig_violin = _chart_sharpe_violin(
+            cpcv_paths,
+            oos_sharpe=oos_sharpe,
+            n_trials=n_trials,
+            psr=psr,
+        )
+        if fig_violin is not None:
+            st.plotly_chart(fig_violin, width="stretch")
+            dsr_note = (
+                f" — DSR deflation uses n_trials={n_trials} from the "
+                "3-tier grid search"
+                if n_trials
+                else ""
+            )
+            st.caption(
+                "Violin of the 15 per-path annualised Sharpes. The dashed "
+                "line is the Deflated-Sharpe expected maximum from "
+                f"best-of-n noise strategies{dsr_note}; the gold line is "
+                "the realised walk-forward OOS Sharpe. A distribution "
+                "sitting above the dashed line — with the gold line near "
+                "the median — is the statistical proof the edge is not "
+                "selection bias."
+            )
+        st.divider()
+
     # Equity curve with log toggle
     col_toggle, _ = st.columns([1, 4])
     with col_toggle:
@@ -579,6 +2863,42 @@ def tab_benchmark(
     # Drawdown
     fig_dd = _chart_benchmark_drawdown(equity_df)
     st.plotly_chart(fig_dd, width="stretch")
+
+    st.divider()
+
+    # Top-N drawdowns ranked (Phase 2)
+    st.subheader("Top Drawdowns — Ranked")
+    fig_top_dd = _chart_top_drawdowns(equity_df, n=10, min_depth=0.01)
+    if fig_top_dd is not None:
+        st.plotly_chart(fig_top_dd, width="stretch")
+        st.caption(
+            "Peak-to-recovery drawdown events, sorted by depth (deepest at top). "
+            "Only drawdowns ≥1% are shown. Ongoing drawdowns (series ends "
+            "underwater) are flagged with a trailing asterisk."
+        )
+        with st.expander("Drawdown detail table", expanded=False):
+            _render_top_drawdowns_table(equity_df, n=10, min_depth=0.01)
+    else:
+        st.info("No drawdowns of at least 1% detected in this equity series.")
+
+    st.divider()
+
+    # Monthly returns calendar heatmap (Phase 1)
+    st.subheader("Monthly Returns Heatmap")
+    fig_cal = _chart_calendar_heatmap(equity_df)
+    if fig_cal is not None:
+        st.plotly_chart(fig_cal, width="stretch")
+        st.caption(
+            "Each cell shows portfolio return compounded within that month. "
+            "The Annual column shows full-year compounded return; the Mean row "
+            "shows the average across covered years (seasonality). Empty cells "
+            "= months outside the backtest window."
+        )
+    else:
+        st.info(
+            "Not enough data to build the monthly heatmap — need at least "
+            "2 months of equity history."
+        )
 
     st.divider()
 
@@ -626,6 +2946,48 @@ def tab_benchmark(
 
     st.divider()
 
+    # Up / Down capture vs benchmark (Phase 5)
+    st.subheader(f"Up / Down Capture vs {_BENCHMARK_TICKER}")
+    fig_capture = _chart_capture_ratios(equity_df)
+    if fig_capture is not None:
+        st.plotly_chart(fig_capture, width="stretch")
+        st.caption(
+            f"Monthly returns classified by the sign of {_BENCHMARK_TICKER}'s "
+            "return. **Up-Capture > 100%** means the portfolio captures more "
+            f"upside than {_BENCHMARK_TICKER} in up months; "
+            "**Down-Capture < 100%** means it loses less in down months. "
+            "The Up/Down ratio summarizes the asymmetry (higher is better). "
+            "Positive Month % shows how often the portfolio returns are "
+            "positive (random chance ≈ 50%)."
+        )
+    else:
+        st.info(
+            "Insufficient data for capture ratios — need at least 2 months "
+            "of equity history."
+        )
+
+    st.divider()
+
+    # Return distribution + QQ (Phase 3)
+    st.subheader("Return Distribution")
+    fig_dist = _chart_return_distribution(equity_df)
+    if fig_dist is not None:
+        st.plotly_chart(fig_dist, width="stretch")
+        st.caption(
+            "Left: histogram of daily returns with a fitted normal PDF "
+            "(dashed gold). The red-shaded region marks the left tail below "
+            "VaR 5%; CVaR 5% is the mean return inside that tail. "
+            "Right: Q-Q plot vs the fitted normal — points bending away "
+            "from the line at the extremes are visual evidence of fat tails."
+        )
+    else:
+        st.info(
+            "Insufficient data for the return distribution — need at least "
+            "30 daily returns."
+        )
+
+    st.divider()
+
     # Rolling Sharpe with slider
     st.subheader("Rolling Sharpe Ratio")
     window = st.slider(
@@ -640,6 +3002,50 @@ def tab_benchmark(
 
     st.divider()
 
+    # Market relationship — rolling beta/alpha/correlation (Phase 4)
+    st.subheader(f"Market Relationship vs {_BENCHMARK_TICKER}")
+    mr_window = st.slider(
+        "Regression window (days)",
+        min_value=60, max_value=252, value=126, step=21,
+        key="bench_market_rel_window",
+    )
+    fig_mr = _chart_rolling_market_relationship(equity_df, window=mr_window)
+    if fig_mr:
+        st.plotly_chart(fig_mr, width="stretch")
+        st.caption(
+            "Rolling OLS of daily portfolio returns on benchmark returns. "
+            "Top: beta (reference = 1 = market exposure). "
+            "Middle: alpha, annualized (reference = 0 = no excess return). "
+            "Bottom: linear correlation (reference = 0 = independent). "
+            "A portfolio generating real alpha should show β near or below 1 "
+            "with α persistently above 0."
+        )
+    else:
+        st.info(f"Insufficient data for {mr_window}-day rolling OLS.")
+
+    st.divider()
+
+    # CAPM scatter with OLS regression (Phase 6)
+    st.subheader(f"CAPM Scatter vs {_BENCHMARK_TICKER}")
+    fig_capm = _chart_capm_scatter(equity_df)
+    if fig_capm is not None:
+        st.plotly_chart(fig_capm, width="stretch")
+        st.caption(
+            "Each point is a single trading day. The gold line is the "
+            "full-sample OLS fit of `R_portfolio = α + β · R_benchmark`. "
+            "The slope (β) is the static market exposure; the intercept, "
+            "annualized by 252, is the alpha. R² quantifies how much of "
+            "the portfolio variance is explained by benchmark moves — "
+            "lower R² leaves more room for idiosyncratic alpha."
+        )
+    else:
+        st.info(
+            "Insufficient data for the CAPM scatter — need at least 3 "
+            "daily returns with non-zero benchmark variance."
+        )
+
+    st.divider()
+
     # Weight heatmap
     st.subheader("Portfolio Weight Evolution")
     fig_heatmap = _chart_weight_heatmap(weights_df)
@@ -647,6 +3053,84 @@ def tab_benchmark(
         st.plotly_chart(fig_heatmap, width="stretch")
     else:
         st.info("No weight history available.")
+
+    st.divider()
+
+    # Portfolio concentration — effective N and Gini (Phase 8)
+    st.subheader("Portfolio Concentration Over Time")
+    fig_conc = _chart_concentration_evolution(weights_df)
+    if fig_conc is not None:
+        st.plotly_chart(fig_conc, width="stretch")
+        st.caption(
+            "**Effective N** (blue, left axis) = 1 / Σwᵢ² is the number "
+            "of equally-weighted positions the book is equivalent to; "
+            "implicit cash counts as a single slot, so a 50% cash + 1 "
+            "stock portfolio scores 2. **Gini** (gold, right axis) is the "
+            "inequality of the held positions (cash appended when positive) "
+            "— 0 = perfectly equal, approaching 1 = fully concentrated. "
+            "The dotted reference line marks the equivalent N if every "
+            "slot sits at the HRP max_weight cap (0.06) — values above the "
+            "line indicate a more balanced book than the cap alone would "
+            "force."
+        )
+    else:
+        st.info("Weight history unavailable for concentration metrics.")
+
+    st.divider()
+
+    # Trading costs — turnover + gross vs net equity (Phase 7)
+    st.subheader("Trading Costs")
+    fig_costs = _chart_turnover_and_costs(equity_df, weights_df)
+    if fig_costs is not None:
+        st.plotly_chart(fig_costs, width="stretch")
+        st.caption(
+            "Top: fraction of capital turned over at each rebalance "
+            "(sum of |Δw| across tickers). Bottom: the gold dashed line "
+            "is the counterfactual gross equity reconstructed by adding "
+            "back the transaction costs deducted at every rebalance "
+            "(15 bps default); the blue solid line is the realized net "
+            "equity. The red shaded area is the cumulative cost drag."
+        )
+    else:
+        st.info(
+            "Cost data unavailable — weights parquet lacks turnover / costs "
+            "columns, or no rebalance events occurred."
+        )
+
+    st.divider()
+
+    # Return attribution waterfall (Phase 9)
+    st.subheader("Return Attribution")
+    if ticker_returns_df is not None and weights_df is not None:
+        contributions = _compute_contribution_per_ticker(
+            weights_df, ticker_returns_df
+        )
+        fig_waterfall = _chart_contribution_waterfall(contributions, top_n=15)
+        if fig_waterfall is not None:
+            st.plotly_chart(fig_waterfall, width="stretch")
+            st.caption(
+                "Each bar is the additive contribution of a single ticker "
+                "to total portfolio return, expressed in percentage points. "
+                "For every rebalance interval, the ticker's weight at the "
+                "rebalance is multiplied by its compound simple return over "
+                "the interval; the values are summed across all intervals. "
+                "The top-15 tickers by |contribution| are shown individually; "
+                "the remainder are aggregated into ``Others``. The final blue "
+                "bar sums all contributions — the small gap versus the "
+                "realized CAGR × years is due to cash carry, transaction "
+                "costs and across-interval compounding."
+            )
+        else:
+            st.info(
+                "No ticker contributions to attribute — weights and returns "
+                "did not align on any shared ticker."
+            )
+    else:
+        st.info(
+            "Return attribution requires ``ticker_returns.parquet`` — "
+            "generated automatically by the next ``make benchmark-fast`` "
+            "run after the Phase 9 backtester change."
+        )
 
     # PDF export
     st.divider()
@@ -2101,6 +4585,7 @@ def main() -> None:
     bench_equity = load_benchmark_equity()
     bench_metrics = load_benchmark_metrics()
     bench_weights = load_benchmark_weights()
+    bench_ticker_returns = load_ticker_returns()
 
     _render_sidebar()
 
@@ -2125,7 +4610,9 @@ def main() -> None:
     )
 
     with tab0:
-        tab_benchmark(bench_equity, bench_metrics, bench_weights)
+        tab_benchmark(
+            bench_equity, bench_metrics, bench_weights, bench_ticker_returns
+        )
 
     with tab1:
         tab_performance(decisions, bench_weights, bench_metrics)

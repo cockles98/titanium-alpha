@@ -1218,17 +1218,17 @@ Ao implementar cada fase, seguir:
 
 | Fase | Status | Commit | Screenshot |
 |---|---|---|---|
-| 1 — Calendar heatmap | ⬜ | — | — |
-| 2 — Top-10 drawdowns | ⬜ | — | — |
-| 3 — Distribution + QQ | ⬜ | — | — |
-| 4 — Rolling beta/alpha | ⬜ | — | — |
-| 5 — Up/Down capture | ⬜ | — | — |
-| 6 — CAPM scatter | ⬜ | — | — |
-| 7 — Turnover + costs | ⬜ | — | — |
-| 8 — Effective N / Gini | ⬜ | — | — |
-| 9 — Contribution waterfall | ⬜ | — | — |
-| 10 — CPCV spaghetti | ⬜ | — | — |
-| 11 — Sharpe violin | ⬜ | — | — |
+| 1 — Calendar heatmap | ✅ | pending | — |
+| 2 — Top-10 drawdowns | ✅ | pending | — |
+| 3 — Distribution + QQ | ✅ | pending | — |
+| 4 — Rolling beta/alpha | ✅ | pending | — |
+| 5 — Up/Down capture | ✅ | pending | — |
+| 6 — CAPM scatter | ✅ | pending | — |
+| 7 — Turnover + costs | ✅ | pending | — |
+| 8 — Effective N / Gini | ✅ | pending | — |
+| 9 — Contribution waterfall | ✅ | pending | — |
+| 10 — CPCV spaghetti | ✅ | pending | — |
+| 11 — Sharpe violin | ✅ | pending | — |
 | 12 — Agent vote matrix | ⬜ | — | — |
 | 13 — Agent agreement | ⬜ | — | — |
 | 14 — RAG source frequency | ⬜ | — | — |

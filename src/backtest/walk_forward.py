@@ -272,6 +272,10 @@ class WalkForwardResult:
         metrics: Summary metrics (populated by benchmark_metrics).
         config: The configuration used.
         metadata: Extra info (n_tickers, period, etc.).
+        ticker_returns: Optional wide DataFrame (date × ticker) of simple
+            daily returns over the active backtest window, useful for
+            downstream contribution-to-return analysis. ``None`` when the
+            backtester was not asked to retain it.
     """
 
     equity_curve: pl.DataFrame
@@ -280,6 +284,7 @@ class WalkForwardResult:
     metrics: dict[str, float] = field(default_factory=dict)
     config: WalkForwardConfig = field(default_factory=WalkForwardConfig)
     metadata: dict[str, Any] = field(default_factory=dict)
+    ticker_returns: pl.DataFrame | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -924,6 +929,16 @@ class WalkForwardBacktester:
             trading_days=cfg.trading_days_per_year,
         )
 
+        # Slice the wide returns matrix to the active window so downstream
+        # contribution analysis (Phase 9 dashboard waterfall) only sees
+        # dates that actually appear in equity_curve / rebalance_history.
+        if equity_dates:
+            ticker_returns_active = returns_wide.filter(
+                pl.col("date").is_in(equity_dates)
+            ).sort("date")
+        else:
+            ticker_returns_active = None
+
         return WalkForwardResult(
             equity_curve=equity_curve,
             daily_returns=daily_returns,
@@ -931,4 +946,5 @@ class WalkForwardBacktester:
             metrics=metrics,
             config=cfg,
             metadata=metadata,
+            ticker_returns=ticker_returns_active,
         )

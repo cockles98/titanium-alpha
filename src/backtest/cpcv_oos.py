@@ -40,6 +40,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import date
 from itertools import combinations
+from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -285,6 +286,11 @@ class ValidationResult:
         p_value: Same as ``deflated_sharpe`` (alias for clarity).
         accepted: Whether the configuration passes acceptance criteria.
         metadata: Additional information (n_paths, path details, etc.).
+        per_path_equity: Optional test-period equity curves, one Polars
+            DataFrame per CPCV path (columns ``date``, ``equity``). Populated
+            by :meth:`CPCVParameterValidator.validate` when
+            ``collect_equity=True``. ``None`` otherwise, for backward
+            compatibility with callers that only inspect Sharpe aggregates.
     """
 
     config: WalkForwardConfig
@@ -296,6 +302,7 @@ class ValidationResult:
     p_value: float
     accepted: bool
     metadata: dict[str, Any] = field(default_factory=dict)
+    per_path_equity: list[pl.DataFrame] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a plain dictionary for JSON output.
@@ -313,6 +320,56 @@ class ValidationResult:
             "accepted": self.accepted,
             "metadata": self.metadata,
         }
+
+    def to_paths_frame(self, config_name: str = "champion") -> pl.DataFrame:
+        """Flatten ``per_path_equity`` to the long format expected by the
+        dashboard's CPCV spaghetti chart.
+
+        Args:
+            config_name: Label stored in the ``config`` column (defaults to
+                ``"champion"``).
+
+        Returns:
+            Long Polars DataFrame with columns
+            ``config, path_id, date, equity, sharpe``. Empty frame when
+            ``per_path_equity`` is ``None`` or all paths are empty.
+        """
+        if not self.per_path_equity:
+            return pl.DataFrame(schema={
+                "config": pl.Utf8,
+                "path_id": pl.Int64,
+                "date": pl.Date,
+                "equity": pl.Float64,
+                "sharpe": pl.Float64,
+            })
+
+        frames: list[pl.DataFrame] = []
+        for pid, eq in enumerate(self.per_path_equity):
+            if eq is None or eq.height == 0:
+                continue
+            sharpe = (
+                self.per_path_sharpe[pid]
+                if pid < len(self.per_path_sharpe)
+                else float("nan")
+            )
+            frames.append(
+                eq.select(["date", "equity"])
+                .with_columns([
+                    pl.lit(config_name).alias("config"),
+                    pl.lit(pid).alias("path_id"),
+                    pl.lit(sharpe).alias("sharpe"),
+                ])
+                .select(["config", "path_id", "date", "equity", "sharpe"])
+            )
+        if not frames:
+            return pl.DataFrame(schema={
+                "config": pl.Utf8,
+                "path_id": pl.Int64,
+                "date": pl.Date,
+                "equity": pl.Float64,
+                "sharpe": pl.Float64,
+            })
+        return pl.concat(frames, how="vertical_relaxed")
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +549,25 @@ class CPCVParameterValidator:
         config: WalkForwardConfig,
         model_factory: ModelFactory,
     ) -> tuple[float, list[float]]:
+        """Backward-compatible 2-tuple wrapper around
+        :meth:`_evaluate_path_with_equity`.
+
+        See the underlying method for full docs; this variant drops the
+        test-period equity frame to preserve the historical ``(sharpe,
+        rets)`` return shape.
+        """
+        sharpe, rets, _equity = self._evaluate_path_with_equity(
+            path_id, test_groups, config, model_factory
+        )
+        return sharpe, rets
+
+    def _evaluate_path_with_equity(
+        self,
+        path_id: int,
+        test_groups: tuple[int, ...],
+        config: WalkForwardConfig,
+        model_factory: ModelFactory,
+    ) -> tuple[float, list[float], pl.DataFrame | None]:
         """Run walk-forward on a single CPCV path and return the Sharpe.
 
         The walk-forward backtester runs on the **full OHLCV** data
@@ -508,12 +584,17 @@ class CPCVParameterValidator:
 
         Returns:
             Tuple of (annualised Sharpe on test period, list of test
-            daily returns).
+            daily returns, Polars DataFrame with columns ``date`` and
+            ``equity`` covering the test period, or ``None`` when the
+            path has fewer than 2 test dates or the backtester failed).
+            The equity column is normalised to start at ``1.0`` on the
+            first test date so paths can be overlaid fairly despite
+            covering different folds.
         """
         test_dates = self._get_test_dates(test_groups)
         if len(test_dates) < 2:
             logger.warning("Path {}: fewer than 2 test dates", path_id)
-            return 0.0, []
+            return 0.0, [], None
 
         # Deep-copy the model factory to prevent cross-path state
         # contamination.  Each CPCV path must start with a fresh model.
@@ -547,7 +628,7 @@ class CPCVParameterValidator:
             )
         except (ValueError, RuntimeError) as exc:
             logger.warning("Path {}: backtester failed: {}", path_id, exc)
-            return 0.0, []
+            return 0.0, [], None
 
         # Extract portfolio returns for test dates only
         test_date_set = set(test_dates)
@@ -561,7 +642,7 @@ class CPCVParameterValidator:
             logger.warning(
                 "Path {}: only {} test returns", path_id, test_returns.height
             )
-            return 0.0, []
+            return 0.0, [], None
 
         port_rets = test_returns["portfolio_return"].to_list()
         sharpe = _compute_sharpe(
@@ -570,6 +651,32 @@ class CPCVParameterValidator:
             trading_days=config.trading_days_per_year,
         )
 
+        # Build the test-period equity curve normalised to 1.0 at the first
+        # test date, so downstream spaghetti plots can overlay paths fairly.
+        try:
+            equity_frame = (
+                result.equity_curve
+                .filter(pl.col("date").is_in(test_date_set))
+                .sort("date")
+                .select(["date", "portfolio_value"])
+                .rename({"portfolio_value": "equity"})
+            )
+            if equity_frame.height > 0:
+                base = float(equity_frame["equity"][0])
+                if base > 0:
+                    equity_frame = equity_frame.with_columns(
+                        (pl.col("equity") / base).alias("equity")
+                    )
+                else:
+                    equity_frame = None
+            else:
+                equity_frame = None
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "Path {}: could not extract equity: {}", path_id, exc
+            )
+            equity_frame = None
+
         logger.debug(
             "Path {} (test splits {}): {} test days, Sharpe={:.3f}",
             path_id,
@@ -577,7 +684,7 @@ class CPCVParameterValidator:
             len(port_rets),
             sharpe,
         )
-        return sharpe, port_rets
+        return sharpe, port_rets, equity_frame
 
     # ------------------------------------------------------------------
     # Public API
@@ -589,6 +696,7 @@ class CPCVParameterValidator:
         model_factory: ModelFactory | None = None,
         baseline_sharpe: float | None = None,
         n_trials: int = 1,
+        collect_equity: bool = False,
     ) -> ValidationResult:
         """Validate a single walk-forward configuration via CPCV-OOS.
 
@@ -623,13 +731,16 @@ class CPCVParameterValidator:
         )
 
         per_path_sharpe: list[float] = []
+        per_path_equity: list[pl.DataFrame | None] = []
         all_test_returns: list[float] = []
         max_path_obs = 0
         for path_id, test_groups in enumerate(self._paths):
-            sharpe, path_returns = self._evaluate_path(
+            sharpe, path_returns, path_equity = self._evaluate_path_with_equity(
                 path_id, test_groups, config, model_factory
             )
             per_path_sharpe.append(sharpe)
+            if collect_equity:
+                per_path_equity.append(path_equity)
             all_test_returns.extend(path_returns)
             if len(path_returns) > max_path_obs:
                 max_path_obs = len(path_returns)
@@ -683,6 +794,7 @@ class CPCVParameterValidator:
             deflated_sharpe=dsr_pvalue,
             p_value=dsr_pvalue,
             accepted=accepted,
+            per_path_equity=per_path_equity if collect_equity else None,
             metadata={
                 "n_paths": n_paths,
                 "n_positive": n_positive,
@@ -795,3 +907,42 @@ def _kurtosis(values: list[float]) -> float:
         return 3.0
     m4 = sum((v - mean) ** 4 for v in values) / n
     return m4 / (m2 ** 2)
+
+
+def save_cpcv_paths(
+    result: ValidationResult,
+    output_path: Path | str,
+    config_name: str = "champion",
+) -> Path:
+    """Persist ``result.per_path_equity`` as a dashboard-ready parquet.
+
+    Writes a long-format file consumable by the Phase 10 spaghetti chart
+    with columns ``config, path_id, date, equity, sharpe``. The
+    ``ValidationResult`` must come from a ``validate(..., collect_equity=
+    True)`` call; otherwise a ``ValueError`` is raised.
+
+    Args:
+        result: Validation result produced with ``collect_equity=True``.
+        output_path: File path (``data/outputs/cpcv_paths.parquet``
+            conventionally).
+        config_name: Label stored on every row in the ``config`` column.
+
+    Returns:
+        Resolved :class:`Path` to the written parquet.
+    """
+    if result.per_path_equity is None:
+        raise ValueError(
+            "ValidationResult has no per_path_equity — re-run validate() "
+            "with collect_equity=True."
+        )
+    frame = result.to_paths_frame(config_name=config_name)
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_parquet(path)
+    logger.info(
+        "Saved {} CPCV path rows for config '{}' to {}",
+        frame.height,
+        config_name,
+        path,
+    )
+    return path

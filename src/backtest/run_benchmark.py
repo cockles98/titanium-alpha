@@ -278,6 +278,9 @@ def _save_outputs(
         - ``benchmark_equity.parquet``: daily equity curve
         - ``benchmark_metrics.json``: computed metrics
         - ``benchmark_weights.parquet``: rebalance weight history
+        - ``ticker_returns.parquet``: wide daily returns (date × ticker),
+          written only when the walk-forward result carries them — used
+          by the dashboard's return attribution waterfall.
 
     Args:
         result: Walk-forward result.
@@ -317,6 +320,12 @@ def _save_outputs(
         weights_path = output_dir / "benchmark_weights.parquet"
         weights_df.write_parquet(weights_path)
         paths["weights"] = weights_path
+
+    # Per-ticker daily returns (Phase 9 return attribution)
+    if result.ticker_returns is not None and result.ticker_returns.height > 0:
+        returns_path = output_dir / "ticker_returns.parquet"
+        result.ticker_returns.write_parquet(returns_path)
+        paths["ticker_returns"] = returns_path
 
     logger.info("Outputs saved to {}: {}", output_dir, list(paths.keys()))
     return paths
