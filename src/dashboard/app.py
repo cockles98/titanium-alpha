@@ -2934,9 +2934,11 @@ _VALIDATED_CONFIG: dict[str, Any] = {
     "max_weight": "min(0.06, 2/n)",
 }
 
-# Key findings from 3-tier CPCV-OOS grid search (547 configs)
+# Key findings from the 3-tier CPCV-OOS grid search that produced the
+# champion configuration. The aggregated trial count is surfaced
+# dynamically in the Validation Results expander to avoid drift.
 _STRESS_FINDINGS: list[str] = [
-    "Triweekly rebalance (rb=15) validated via 3-tier CPCV-OOS (547 configs).",
+    "Triweekly rebalance (rb=15) validated via 3-tier CPCV-OOS grid search.",
     "Vol targeting at 10%: single biggest driver (+0.035 Sharpe, MaxDD halved).",
     "Ward linkage + Ledoit-Wolf shrinkage: confirmed dominant HRP structure.",
     "max_weight relaxed from min(0.25, 2/n) to min(0.06, 2/n): +0.026 Sharpe.",
@@ -2965,7 +2967,11 @@ def tab_benchmark(
 
     # --- Strategy Configuration expander
     with st.expander("Strategy Configuration (CPCV-OOS validated)", expanded=False):
-        st.caption("Parameters validated via 3-tier CPCV-OOS grid search (547 configs, 15 paths each).")
+        st.caption(
+            "Parameters validated via 3-tier CPCV-OOS grid search "
+            "(15 combinatorial test paths per config). See the "
+            "Validation Results expander below for the latest sweep."
+        )
         cfg_col1, cfg_col2 = st.columns(2)
         cfg_items = list(_VALIDATED_CONFIG.items())
         mid_cfg = len(cfg_items) // 2
@@ -2997,11 +3003,18 @@ def tab_benchmark(
     # --- Validation Results expander (if available)
     validation = _load_validation_results()
     if validation and validation.get("configs"):
-        with st.expander("CPCV-OOS Validation Results", expanded=False):
+        with st.expander(
+            "CPCV-OOS Validation Results (latest sweep)", expanded=False
+        ):
             generated = validation.get("generated_at") or "N/A"
             n_trials_sum = validation.get("total_trials")
             n_cfgs = len(validation["configs"])
-            caption = f"Generated: {generated}  |  Configs: {n_cfgs}"
+            caption = (
+                "Latest 3-tier CPCV-OOS grid search on disk. "
+                "May differ from the validation that originally selected "
+                "the champion configuration above. "
+                f"Generated: {generated}  |  Configs: {n_cfgs}"
+            )
             if n_trials_sum:
                 caption += f"  |  Total trials: {n_trials_sum:,}"
             st.caption(caption)
