@@ -184,7 +184,8 @@ def test_build_actions_and_weights_populated():
     assert matrix["weights"] == pytest.approx({"A": 0.1, "B": 0.01})
 
 
-def test_build_buy_letter_and_hold_letter_distinct():
+def test_build_pm_letters_match_legend():
+    """PM letters must match the legend caption (B / N / S)."""
     decs, _ = _payload(
         [_decision("A", "BUY"), _decision("B", "HOLD"), _decision("C", "SELL")],
     )
@@ -193,8 +194,21 @@ def test_build_buy_letter_and_hold_letter_distinct():
     by_t = {t: i for i, t in enumerate(matrix["tickers"])}
     pm = 3
     assert matrix["text"][by_t["A"]][pm] == "B"
-    assert matrix["text"][by_t["B"]][pm] == "H"   # HOLD letter is "H"
+    assert matrix["text"][by_t["B"]][pm] == "N"   # HOLD shares the neutral letter
     assert matrix["text"][by_t["C"]][pm] == "S"
+
+
+def test_build_hold_and_neutral_share_same_letter():
+    """A neutral agent vote and a PM HOLD must render with identical letters."""
+    decs, debate_dict = _payload(
+        [_decision("X", "HOLD")],
+        debate={"X": {"reports": [_report("technical", "neutral")]}},
+    )
+    matrix = _build_vote_matrix(decs, debate_dict)
+    assert matrix is not None
+    technical_letter = matrix["text"][0][0]
+    pm_letter = matrix["text"][0][3]
+    assert technical_letter == pm_letter == "N"
 
 
 # ---------------------------------------------------------------------------

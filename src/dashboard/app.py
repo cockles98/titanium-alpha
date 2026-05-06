@@ -1710,14 +1710,14 @@ def _chart_concentration_evolution(weights_df: Any) -> go.Figure | None:
     One point per rebalance date sourced from the long-format weights
     parquet. Cash is treated per the semantics of ``_compute_effective_n``
     (counted as a slot) and ``_compute_gini`` (appended only when positive).
-    A dotted reference line at ``Effective N = 1 / 0.06 ≈ 16.67`` marks
-    the equivalent number of positions when every slot sits at the HRP
-    ``max_weight = 0.06`` cap — the book crosses above this line whenever
-    weights are distributed more evenly than the cap would force.
+    A dotted reference line marks the Effective N when every slot sits at
+    the HRP binding cap (``min(0.06, 2/n)`` where ``n`` is the universe
+    size, taken from the weights frame). The book crosses above this line
+    whenever weights are distributed more evenly than the cap would force.
 
     Args:
-        weights_df: Long-format Polars DataFrame with at least ``date`` and
-            ``weight`` columns.
+        weights_df: Long-format Polars DataFrame with at least ``date``,
+            ``ticker`` and ``weight`` columns.
 
     Returns:
         Plotly Figure, or ``None`` if the weight history is missing or empty.
@@ -1736,6 +1736,16 @@ def _chart_concentration_evolution(weights_df: Any) -> go.Figure | None:
     )
     if per_date.height == 0:
         return None
+
+    # Resolve the binding HRP cap from the universe size in the weights
+    # frame. The walk-forward backtester applies max_weight = min(0.06, 2/n)
+    # so for n >= 34 the 2/n term wins; clamp to 0.06 otherwise.
+    n_tickers = (
+        int(weights_df["ticker"].n_unique())
+        if "ticker" in weights_df.columns
+        else 0
+    )
+    cap = min(0.06, 2.0 / n_tickers) if n_tickers > 0 else 0.06
 
     dates = per_date["date"].to_list()
     eff_ns: list[float] = []
@@ -1773,7 +1783,7 @@ def _chart_concentration_evolution(weights_df: Any) -> go.Figure | None:
         secondary_y=True,
     )
 
-    max_weight_ref = 1.0 / 0.06
+    max_weight_ref = 1.0 / cap
     fig.add_shape(
         type="line",
         xref="paper", x0=0.0, x1=1.0,
@@ -1783,7 +1793,7 @@ def _chart_concentration_evolution(weights_df: Any) -> go.Figure | None:
     )
     fig.add_annotation(
         text=(
-            f"Equivalent N at HRP max_weight=0.06 ({max_weight_ref:.1f})"
+            f"Equivalent N at HRP cap={cap:.4f} ({max_weight_ref:.1f})"
         ),
         xref="paper", yref="y",
         x=0.98, y=max_weight_ref,
@@ -2864,15 +2874,49 @@ def _chart_weight_heatmap(weights_df: Any) -> go.Figure | None:
 
 
 def _load_validation_results() -> dict[str, Any] | None:
-    """Load CPCV-OOS validation_results.json if available."""
-    path = DATA_DIR / "validation_results.json"
-    if not path.exists():
+    """Merge ``validation_tier*_results.json`` into a single payload.
+
+    The 3-tier grid search persists one JSON per tier; this helper reads
+    them in order and folds the per-config entries into a single
+    ``configs`` mapping with an extra ``tier`` field, while also
+    aggregating ``total_trials`` across tiers and surfacing the most
+    recent ``generated_at`` timestamp. Returns ``None`` when no tier
+    files are present so the expander can be skipped gracefully.
+    """
+    configs: dict[str, dict[str, Any]] = {}
+    total_trials = 0
+    generated_ats: list[str] = []
+    found = False
+
+    for path in sorted(DATA_DIR.glob("validation_tier*_results.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        found = True
+        tier_label = data.get("tier") or path.stem.replace(
+            "validation_", ""
+        ).replace("_results", "")
+        for name, entry in (data.get("configs") or {}).items():
+            merged = dict(entry)
+            merged["tier"] = tier_label
+            # Disambiguate when two tiers re-use the same config key.
+            key = name if name not in configs else f"{tier_label}:{name}"
+            configs[key] = merged
+        trials = data.get("total_trials")
+        if isinstance(trials, (int, float)) and trials > 0:
+            total_trials += int(trials)
+        if data.get("generated_at"):
+            generated_ats.append(str(data["generated_at"]))
+
+    if not found:
         return None
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+    return {
+        "generated_at": max(generated_ats) if generated_ats else None,
+        "total_trials": total_trials or None,
+        "configs": configs,
+    }
 
 
 # Validated strategy configuration (Session 39 — CPCV-OOS 3-tier, 547 configs)
@@ -2898,7 +2942,8 @@ _STRESS_FINDINGS: list[str] = [
     "max_weight relaxed from min(0.25, 2/n) to min(0.06, 2/n): +0.026 Sharpe.",
     "top_n and killswitch both harmful — disabled.",
     "Transaction costs: slippage 5bps + commission 10bps fully reflected.",
-    "Record: Sharpe=0.712, CAGR=13.35%, MaxDD=-18.43%, Beta=0.532.",
+    "Record (10y OOS): Sharpe=0.766, CAGR=13.68%, MaxDD=-21.94%, "
+    "Beta=0.566, Alpha=+2.57%.",
 ]
 
 
@@ -2951,13 +2996,19 @@ def tab_benchmark(
 
     # --- Validation Results expander (if available)
     validation = _load_validation_results()
-    if validation and "configs" in validation:
+    if validation and validation.get("configs"):
         with st.expander("CPCV-OOS Validation Results", expanded=False):
-            st.caption(f"Generated: {validation.get('generated_at', 'N/A')}")
-            configs = validation["configs"]
+            generated = validation.get("generated_at") or "N/A"
+            n_trials_sum = validation.get("total_trials")
+            n_cfgs = len(validation["configs"])
+            caption = f"Generated: {generated}  |  Configs: {n_cfgs}"
+            if n_trials_sum:
+                caption += f"  |  Total trials: {n_trials_sum:,}"
+            st.caption(caption)
             rows = []
-            for name, data in configs.items():
+            for name, data in validation["configs"].items():
                 rows.append({
+                    "Tier": data.get("tier", "—"),
                     "Config": name,
                     "Mean Sharpe": f"{data.get('mean_sharpe', 0):.3f}",
                     "Std": f"{data.get('std_sharpe', 0):.3f}",
@@ -3258,9 +3309,10 @@ def tab_benchmark(
             "inequality of the held positions (cash appended when positive) "
             "— 0 = perfectly equal, approaching 1 = fully concentrated. "
             "The dotted reference line marks the equivalent N if every "
-            "slot sits at the HRP max_weight cap (0.06) — values above the "
-            "line indicate a more balanced book than the cap alone would "
-            "force."
+            "slot sits at the HRP binding cap `min(0.06, 2/n)` — for the "
+            "current 52-ticker universe that cap is 2/52 ≈ 0.0385, so the "
+            "reference is at Effective N = 26. Values above the line "
+            "indicate a more balanced book than the cap alone would force."
         )
     else:
         st.info("Weight history unavailable for concentration metrics.")
@@ -4262,7 +4314,7 @@ _SIGNAL_TO_CODE: dict[str, int] = {
 }
 _SIGNAL_TO_LETTER: dict[str, str] = {
     "bullish": "B", "BUY": "B",
-    "neutral": "N", "HOLD": "H",
+    "neutral": "N", "HOLD": "N",
     "bearish": "S", "SELL": "S",
 }
 _AGENT_KEY_TO_COL: dict[str, int] = {
@@ -4884,13 +4936,24 @@ def _chart_quantile_fan(
             annotation_font_size=11,
         )
 
-    # Fan bands (outer to inner for proper layering)
+    # Fan bands (outer to inner for proper layering). The CI label is the
+    # span between the outer/inner quantiles in percent — for the default
+    # NeuralForecast `level=80` config that is exactly 80% (lo-80→10th to
+    # hi-80→90th) and 50% (lo-50→25th to hi-50→75th).
     band_pairs = []
     if len(q_cols) >= 5:
-        # q0.1 - q0.9 (90% band)
-        band_pairs.append((q_cols[0], q_cols[-1], "90% CI", "rgba(74,144,217,0.15)"))
-        # q0.25 - q0.75 (50% band)
-        band_pairs.append((q_cols[1], q_cols[-2], "50% CI", "rgba(74,144,217,0.30)"))
+        outer_span = round(
+            (_col_to_quantile(q_cols[-1]) - _col_to_quantile(q_cols[0])) * 100
+        )
+        inner_span = round(
+            (_col_to_quantile(q_cols[-2]) - _col_to_quantile(q_cols[1])) * 100
+        )
+        band_pairs.append(
+            (q_cols[0], q_cols[-1], f"{outer_span}% CI", "rgba(74,144,217,0.15)")
+        )
+        band_pairs.append(
+            (q_cols[1], q_cols[-2], f"{inner_span}% CI", "rgba(74,144,217,0.30)")
+        )
 
     for q_low, q_high, name, fill_color in band_pairs:
         low_vals = [r.get(q_low, 0) for r in forecast_rows]
@@ -5009,11 +5072,32 @@ def _chart_ticker_weight_history(
 def _chart_ticker_cumulative_return(
     equity_df: Any,
     ticker: str,
+    ticker_returns_df: Any | None = None,
 ) -> go.Figure | None:
-    """Line chart of a ticker's cumulative return vs portfolio vs benchmark."""
+    """Cumulative return for the selected ticker vs portfolio vs benchmark.
+
+    The portfolio and benchmark series come from ``equity_df`` normalised
+    to 1.0 at ``t = 0``. The ticker line is compounded from its daily
+    simple returns in ``ticker_returns_df`` (wide ``date × ticker`` frame),
+    aligned to the same start date as ``equity_df`` so the three lines
+    share a common base. When ``ticker_returns_df`` is missing or does
+    not carry the requested ticker, the chart degrades gracefully to the
+    portfolio + benchmark pair.
+
+    Args:
+        equity_df: Polars DataFrame with ``date``, ``portfolio_value``
+            and ``benchmark_value``.
+        ticker: Ticker to overlay on top of the portfolio / benchmark.
+        ticker_returns_df: Optional Polars DataFrame with a ``date``
+            column and one column per ticker holding daily simple returns
+            (the parquet emitted by the walk-forward backtester).
+
+    Returns:
+        Plotly Figure, or ``None`` when ``equity_df`` lacks at least two
+        rows or polars is unavailable.
+    """
     try:
-        # Availability probe: the function gracefully returns None when polars is unavailable.
-        import polars as pl  # noqa: F401
+        import polars as pl
     except ImportError:
         return None
 
@@ -5024,11 +5108,44 @@ def _chart_ticker_cumulative_return(
     port_vals = equity_df["portfolio_value"].to_list()
     bench_vals = equity_df["benchmark_value"].to_list()
 
-    # Normalise to 1.0
     port_norm = [v / port_vals[0] for v in port_vals]
     bench_norm = [v / bench_vals[0] for v in bench_vals]
 
+    # Optional per-ticker line — compound daily returns over the same
+    # date window so the three series share a common 1.0 base.
+    ticker_dates: list[Any] = []
+    ticker_norm: list[float] = []
+    if (
+        ticker_returns_df is not None
+        and ticker in (ticker_returns_df.columns if hasattr(ticker_returns_df, "columns") else [])
+        and "date" in ticker_returns_df.columns
+    ):
+        start_date = dates[0]
+        end_date = dates[-1]
+        sub = (
+            ticker_returns_df
+            .filter(
+                (pl.col("date") >= start_date)
+                & (pl.col("date") <= end_date)
+            )
+            .sort("date")
+            .select(["date", ticker])
+        )
+        if sub.height >= 2:
+            ticker_dates = sub["date"].to_list()
+            rets = sub[ticker].to_list()
+            cum = 1.0
+            for r in rets:
+                cum *= 1.0 + (float(r) if r is not None else 0.0)
+                ticker_norm.append(cum)
+
     fig = go.Figure()
+    if ticker_norm:
+        fig.add_trace(go.Scatter(
+            x=ticker_dates, y=ticker_norm,
+            name=ticker,
+            line=dict(color=_ACCENT_GREEN, width=1.5),
+        ))
     fig.add_trace(go.Scatter(
         x=dates, y=port_norm, name="Portfolio",
         line=dict(color=_ACCENT_BLUE, width=1.5),
@@ -5038,9 +5155,14 @@ def _chart_ticker_cumulative_return(
         line=dict(color=_ACCENT_GOLD, width=1.5, dash="dash"),
     ))
 
+    title_suffix = (
+        f"{ticker} vs Portfolio vs {_BENCHMARK_TICKER}"
+        if ticker_norm
+        else f"Portfolio vs {_BENCHMARK_TICKER}"
+    )
     fig.update_layout(
         title=dict(
-            text="Cumulative Returns — Portfolio vs Benchmark",
+            text=f"Cumulative Returns — {title_suffix}",
             font=dict(size=16, color=_TEXT),
         ),
         xaxis_title="Date",
@@ -5082,6 +5204,7 @@ def tab_microstructure(
     predictions: dict[str, dict[str, Any]] | None,
     bench_weights: Any | None = None,
     bench_equity: Any | None = None,
+    bench_ticker_returns: Any | None = None,
 ) -> None:
     """Render the Microstructure tab.
 
@@ -5148,10 +5271,10 @@ def tab_microstructure(
         else:
             st.info(f"No benchmark weight data for {selected}.")
 
-    # --- Portfolio vs benchmark cumulative return ---
+    # --- Ticker vs portfolio vs benchmark cumulative return ---
     if bench_equity is not None:
         fig_cr = _chart_ticker_cumulative_return(
-            bench_equity, selected
+            bench_equity, selected, ticker_returns_df=bench_ticker_returns
         )
         if fig_cr:
             st.plotly_chart(fig_cr, width="stretch")
@@ -5182,13 +5305,15 @@ def _render_sidebar() -> None:
         )
         st.divider()
         st.markdown("### Links")
-        st.markdown("- [GitHub repository](https://github.com/)")
-        st.markdown("- [Methodology (docs/)](https://github.com/)")
-        st.markdown("- [Benchmark analysis](https://github.com/)")
+        repo = "https://github.com/cockles98/titanium-alpha"
+        st.markdown(f"- [GitHub repository]({repo})")
+        st.markdown(f"- [Architecture]({repo}/blob/master/ARCHITECTURE.md)")
+        st.markdown(f"- [Backtest metrics reference]({repo}/blob/master/docs/backtest_metrics.md)")
         st.divider()
         st.caption(
-            "Walk-forward record: Sharpe=0.712, CAGR=13.35%, "
-            "MaxDD=-18.43%, Beta=0.532 (rf=5%)."
+            "Walk-forward record (10y OOS): Sharpe=0.766, "
+            "CAGR=13.68%, MaxDD=-21.94%, Beta=0.566, "
+            "Alpha=+2.57% (rf=5%)."
         )
 
 
@@ -5264,7 +5389,10 @@ def main() -> None:
             )
 
     with tab3:
-        tab_microstructure(forecast, predictions, bench_weights, bench_equity)
+        tab_microstructure(
+            forecast, predictions, bench_weights, bench_equity,
+            bench_ticker_returns=bench_ticker_returns,
+        )
 
 
 if __name__ == "__main__":
