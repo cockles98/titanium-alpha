@@ -3683,6 +3683,205 @@ def _chart_action_distribution(
     return fig
 
 
+def _decision_flow_breakdown(
+    decisions: dict[str, Any],
+) -> dict[str, float] | None:
+    """Compute the capital-share flows for the decision-flow Sankey.
+
+    All flows are denominated in fraction-of-total-capital, assuming a
+    uniform 1/N prior at the universe level. Returned keys correspond
+    to the eight links of the Sankey, plus diagnostics.
+
+    Args:
+        decisions: Loaded ``decisions.json`` payload.
+
+    Returns:
+        A mapping with ``f_buy``, ``f_hold``, ``f_sell``,
+        ``invested``, ``cash_from_hrp``, ``cash_from_excluded``,
+        ``n_buy``, ``n_hold``, ``n_sell``, ``n_total`` -- or ``None``
+        when the input lacks the required fields.
+    """
+    if not decisions:
+        return None
+    decs = decisions.get("decisions", [])
+    if not decs:
+        return None
+
+    meta = decisions.get("metadata", {})
+    counted_buy = sum(1 for d in decs if d.get("action") == "BUY")
+    counted_hold = sum(1 for d in decs if d.get("action") == "HOLD")
+    counted_sell = sum(1 for d in decs if d.get("action") == "SELL")
+    n_buy = int(meta.get("n_buy", counted_buy))
+    n_hold = int(meta.get("n_hold", counted_hold))
+    n_sell = int(meta.get("n_sell", counted_sell))
+    n_total = n_buy + n_hold + n_sell
+    if n_total == 0:
+        return None
+
+    invested = meta.get("invested_fraction")
+    if invested is None:
+        invested = float(sum(d.get("weight", 0.0) or 0.0 for d in decs))
+    invested = max(0.0, min(1.0, float(invested)))
+
+    f_buy = n_buy / n_total
+    f_hold = n_hold / n_total
+    f_sell = n_sell / n_total
+
+    hrp_pool = f_buy + f_hold
+    cash_from_hrp = max(0.0, hrp_pool - invested)
+    cash_from_excluded = f_sell
+
+    return {
+        "n_buy": float(n_buy),
+        "n_hold": float(n_hold),
+        "n_sell": float(n_sell),
+        "n_total": float(n_total),
+        "f_buy": f_buy,
+        "f_hold": f_hold,
+        "f_sell": f_sell,
+        "invested": invested,
+        "cash_from_hrp": cash_from_hrp,
+        "cash_from_excluded": cash_from_excluded,
+    }
+
+
+def _chart_decision_flow_sankey(
+    decisions: dict[str, Any],
+) -> go.Figure | None:
+    """Render the agentic decision pipeline as a 4-column Sankey diagram.
+
+    Columns
+    -------
+    1. **Universe** -- single node aggregating every eligible ticker.
+    2. **Debate** -- BUY / HOLD / SELL split from the LangGraph
+       portfolio-manager output.
+    3. **HRP** -- whether the ticker entered the HRP-optimised pool
+       (BUY/HOLD) or was excluded outright (SELL).
+    4. **Final** -- ``Invested`` vs ``Cash`` after the 3-tier weight
+       tilt (``BUY=HRP``, ``HOLD=HRP*confidence``, ``SELL=0``).
+    All flows are denominated in fraction-of-total-capital under a
+    uniform 1/N prior at the universe level. The flow into the
+    ``Invested`` node equals
+    ``decisions['metadata']['invested_fraction']`` exactly.
+
+    Args:
+        decisions: Loaded ``decisions.json`` payload.
+
+    Returns:
+        Plotly Figure, or ``None`` if required fields are missing.
+    """
+    flow = _decision_flow_breakdown(decisions)
+    if flow is None:
+        return None
+
+    n_buy = int(flow["n_buy"])
+    n_hold = int(flow["n_hold"])
+    n_sell = int(flow["n_sell"])
+    n_total = int(flow["n_total"])
+    invested = flow["invested"]
+    cash_total = max(0.0, 1.0 - invested)
+
+    UNIVERSE, BUY, HOLD, SELL, HRP_ACTIVE, HRP_ZERO, INVESTED, CASH = range(8)
+
+    labels = [
+        f"Universe ({n_total})",
+        f"BUY ({n_buy})",
+        f"HOLD ({n_hold})",
+        f"SELL ({n_sell})",
+        "HRP-allocated",
+        "Excluded",
+        f"Invested ({invested:.1%})",
+        f"Cash ({cash_total:.1%})",
+    ]
+    node_colors = [
+        _ACCENT_BLUE,
+        ACTION_COLORS["BUY"],
+        ACTION_COLORS["HOLD"],
+        ACTION_COLORS["SELL"],
+        _ACCENT_BLUE,
+        "#888888",
+        _ACCENT_GREEN,
+        "#666666",
+    ]
+    # Custom column positions (Sankey x in [0, 1]). Snap arrangement.
+    node_x = [0.001, 0.33, 0.33, 0.33, 0.62, 0.62, 0.999, 0.999]
+    node_y = [0.50, 0.18, 0.55, 0.92, 0.40, 0.92, 0.30, 0.85]
+
+    buy_fill = "rgba(67, 160, 71, 0.45)"
+    hold_fill = "rgba(255, 179, 0, 0.45)"
+    sell_fill = "rgba(229, 57, 53, 0.45)"
+    invested_fill = "rgba(67, 160, 71, 0.55)"
+    cash_fill = "rgba(150, 150, 150, 0.40)"
+
+    sources: list[int] = []
+    targets: list[int] = []
+    values: list[float] = []
+    link_colors: list[str] = []
+
+    def _link(src: int, tgt: int, val: float, color: str) -> None:
+        if val <= 0:
+            return
+        sources.append(src)
+        targets.append(tgt)
+        values.append(val)
+        link_colors.append(color)
+
+    _link(UNIVERSE, BUY, flow["f_buy"], buy_fill)
+    _link(UNIVERSE, HOLD, flow["f_hold"], hold_fill)
+    _link(UNIVERSE, SELL, flow["f_sell"], sell_fill)
+    _link(BUY, HRP_ACTIVE, flow["f_buy"], buy_fill)
+    _link(HOLD, HRP_ACTIVE, flow["f_hold"], hold_fill)
+    _link(SELL, HRP_ZERO, flow["f_sell"], sell_fill)
+    _link(HRP_ACTIVE, INVESTED, flow["invested"], invested_fill)
+    _link(HRP_ACTIVE, CASH, flow["cash_from_hrp"], cash_fill)
+    _link(HRP_ZERO, CASH, flow["cash_from_excluded"], cash_fill)
+
+    fig = go.Figure(
+        data=[
+            go.Sankey(
+                arrangement="snap",
+                node=dict(
+                    pad=22,
+                    thickness=20,
+                    line=dict(color=_DARK_BG, width=0.5),
+                    label=labels,
+                    color=node_colors,
+                    x=node_x,
+                    y=node_y,
+                    hovertemplate="%{label}<extra></extra>",
+                ),
+                link=dict(
+                    source=sources,
+                    target=targets,
+                    value=values,
+                    color=link_colors,
+                    hovertemplate=(
+                        "%{source.label} → %{target.label}: "
+                        "%{value:.1%} of capital<extra></extra>"
+                    ),
+                ),
+            )
+        ]
+    )
+    fig.update_layout(
+        title=dict(
+            text=(
+                "Decision Flow — Universe → Debate → HRP → Final"
+                f"   |   Invested {invested:.1%} · Cash {cash_total:.1%}"
+            ),
+            x=0.0,
+            xanchor="left",
+            font=dict(size=15, color=_TEXT),
+        ),
+        font=dict(color=_TEXT, size=12),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        height=420,
+        margin=dict(l=10, r=10, t=70, b=20),
+    )
+    return fig
+
+
 def _render_weight_delta(
     current_weights: dict[str, float],
     bench_weights_df: Any,
@@ -3788,6 +3987,17 @@ def tab_performance(
             caption += f"  |  Invested: {invested_frac:.1%}  |  Cash: {1.0 - invested_frac:.1%}"
         st.caption(caption)
         _render_metric_cards(decisions)
+
+        # Pipeline overview: Universe → Debate → HRP → Final.
+        fig_flow = _chart_decision_flow_sankey(decisions)
+        if fig_flow is not None:
+            st.plotly_chart(fig_flow, width="stretch")
+            st.caption(
+                "Flow widths are fractions of total capital under a "
+                "uniform 1/N prior at the universe stage. The total "
+                "flow into the Invested node matches the per-decision "
+                "weight sum exactly."
+            )
 
         # Use per-decision weights (actual allocation after 3-tier adjustment)
         decs = decisions.get("decisions", [])
