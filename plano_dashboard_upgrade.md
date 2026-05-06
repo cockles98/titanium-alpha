@@ -1253,7 +1253,7 @@ Ao implementar cada fase, seguir:
 | 14 — RAG source frequency | ⬜ | — | — |
 | 15 — PatchTST calibration | ⬜ | — | — |
 | 16 — Fan chart coverage | ⬜ | — | — |
-| 17 — Decision flow sankey | ⬜ | — | — |
+| 17 — Decision flow sankey | ✅ | latest | — |
 | 18 — Vol targeting trajectory | ⬜ | — | — |
 
 ---

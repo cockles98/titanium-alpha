@@ -4078,6 +4078,208 @@ def tab_performance(
 # ---------------------------------------------------------------------------
 
 
+_SIGNAL_TO_CODE: dict[str, int] = {
+    "bullish": 1, "BUY": 1,
+    "neutral": 0, "HOLD": 0,
+    "bearish": -1, "SELL": -1,
+}
+_SIGNAL_TO_LETTER: dict[str, str] = {
+    "bullish": "B", "BUY": "B",
+    "neutral": "N", "HOLD": "H",
+    "bearish": "S", "SELL": "S",
+}
+_AGENT_KEY_TO_COL: dict[str, int] = {
+    "technical": 0,
+    "fundamental": 1,
+    "bear": 2,
+}
+_VOTE_MATRIX_AGENTS: list[str] = ["Technical", "Fundamental", "Bear", "PM"]
+
+
+def _build_vote_matrix(
+    decisions: dict[str, Any],
+    debate: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Build the data structures for the agent-vote heatmap.
+
+    Tickers are sorted by PM action (BUY → HOLD → SELL), then
+    alphabetically inside each group, so the BUY block is always at
+    the top and consensus/dissent patterns are easy to read.
+
+    Args:
+        decisions: Loaded ``decisions.json`` payload (source of truth
+            for the ticker list and PM column).
+        debate: Loaded ``debate_history.json`` payload, or ``None``
+            when not available. Provides the per-agent ``signal`` for
+            the Technical / Fundamental / Bear columns.
+
+    Returns:
+        A mapping with ``tickers``, ``agents``, ``z`` (2D code matrix
+        with ``None`` for missing cells), ``text`` (cell labels),
+        ``confidence`` (per-cell, ``None`` for missing), ``actions``
+        (per-ticker PM action) and ``weights`` (per-ticker final
+        weight). Returns ``None`` when ``decisions`` is empty.
+    """
+    if not decisions:
+        return None
+    decs_list = decisions.get("decisions", [])
+    if not decs_list:
+        return None
+
+    decs_by_ticker = {d["ticker"]: d for d in decs_list}
+    action_order = {"BUY": 0, "HOLD": 1, "SELL": 2}
+    tickers = sorted(
+        decs_by_ticker.keys(),
+        key=lambda t: (
+            action_order.get(decs_by_ticker[t].get("action", "HOLD"), 1),
+            t,
+        ),
+    )
+
+    n = len(tickers)
+    n_cols = len(_VOTE_MATRIX_AGENTS)
+    z: list[list[float | None]] = [[None] * n_cols for _ in range(n)]
+    text: list[list[str]] = [["" for _ in range(n_cols)] for _ in range(n)]
+    confidence: list[list[float | None]] = [[None] * n_cols for _ in range(n)]
+
+    for i, t in enumerate(tickers):
+        d = decs_by_ticker[t]
+        # PM column (last) — always available from decisions.json
+        pm_action = d.get("action", "HOLD")
+        z[i][3] = _SIGNAL_TO_CODE.get(pm_action, 0)
+        text[i][3] = _SIGNAL_TO_LETTER.get(pm_action, "?")
+        pm_conf = d.get("confidence", 0.0)
+        confidence[i][3] = float(pm_conf) if pm_conf is not None else 0.0
+
+        # Agent columns from debate_history (when available)
+        if debate and t in debate:
+            for report in debate[t].get("reports", []) or []:
+                agent_key = (report.get("agent") or "").lower()
+                col = _AGENT_KEY_TO_COL.get(agent_key)
+                if col is None:
+                    continue
+                signal = report.get("signal", "neutral")
+                if signal in _SIGNAL_TO_CODE:
+                    z[i][col] = _SIGNAL_TO_CODE[signal]
+                    text[i][col] = _SIGNAL_TO_LETTER[signal]
+                conf = report.get("confidence", 0.0)
+                confidence[i][col] = (
+                    float(conf) if conf is not None else 0.0
+                )
+
+    return {
+        "tickers": tickers,
+        "agents": list(_VOTE_MATRIX_AGENTS),
+        "z": z,
+        "text": text,
+        "confidence": confidence,
+        "weights": {t: float(decs_by_ticker[t].get("weight", 0.0) or 0.0)
+                    for t in tickers},
+        "actions": {t: decs_by_ticker[t].get("action", "HOLD")
+                    for t in tickers},
+    }
+
+
+def _chart_agent_vote_matrix(
+    decisions: dict[str, Any],
+    debate: dict[str, Any] | None,
+) -> go.Figure | None:
+    """Heatmap of agent votes for the current run.
+
+    Rows are tickers (sorted BUY → HOLD → SELL); columns are the four
+    voices (Technical, Fundamental, Bear, PM). Cell color encodes the
+    direction (green=bullish/BUY, amber=neutral/HOLD, red=bearish/SELL),
+    cell text is the one-letter vote, and the hover surfaces confidence
+    and the final weight (PM column only).
+
+    Args:
+        decisions: Loaded ``decisions.json`` payload.
+        debate: Loaded ``debate_history.json`` payload, or ``None``.
+
+    Returns:
+        Plotly Figure, or ``None`` when ``decisions`` is empty.
+    """
+    matrix = _build_vote_matrix(decisions, debate)
+    if matrix is None:
+        return None
+
+    tickers: list[str] = matrix["tickers"]
+    agents: list[str] = matrix["agents"]
+    n = len(tickers)
+    actions = matrix["actions"]
+    n_buy = sum(1 for a in actions.values() if a == "BUY")
+    n_hold = sum(1 for a in actions.values() if a == "HOLD")
+    n_sell = sum(1 for a in actions.values() if a == "SELL")
+
+    hover_text: list[list[str]] = []
+    for i, t in enumerate(tickers):
+        row: list[str] = []
+        for j, agent in enumerate(agents):
+            conf = matrix["confidence"][i][j]
+            vote = matrix["text"][i][j] or "—"
+            if conf is None:
+                row.append(
+                    f"<b>{t}</b><br>Voice: {agent}<br>Vote: missing"
+                )
+            elif agent == "PM":
+                w = matrix["weights"][t]
+                row.append(
+                    f"<b>{t}</b><br>Voice: {agent}<br>"
+                    f"Vote: {vote}<br>"
+                    f"Confidence: {conf:.2f}<br>"
+                    f"Final weight: {w:.2%}"
+                )
+            else:
+                row.append(
+                    f"<b>{t}</b><br>Voice: {agent}<br>"
+                    f"Vote: {vote}<br>"
+                    f"Confidence: {conf:.2f}"
+                )
+        hover_text.append(row)
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=matrix["z"],
+            x=agents,
+            y=tickers,
+            text=matrix["text"],
+            texttemplate="%{text}",
+            textfont=dict(size=11, color=_TEXT),
+            colorscale=[
+                [0.0, "#E53935"],   # bearish / SELL
+                [0.5, "#FFB300"],   # neutral / HOLD
+                [1.0, "#43A047"],   # bullish / BUY
+            ],
+            zmin=-1, zmid=0, zmax=1,
+            showscale=False,
+            xgap=2,
+            ygap=1,
+            customdata=hover_text,
+            hovertemplate="%{customdata}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=dict(
+            text=(
+                f"Decision Matrix — current run "
+                f"({n} tickers × {len(agents)} voices)"
+                f"   |   {n_buy} BUY · {n_hold} HOLD · {n_sell} SELL"
+            ),
+            x=0.0,
+            xanchor="left",
+            font=dict(size=15, color=_TEXT),
+        ),
+        font=dict(color=_TEXT),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        height=max(420, n * 16 + 100),
+        margin=dict(l=70, r=20, t=80, b=40),
+        xaxis=dict(side="top", tickfont=dict(size=12)),
+        yaxis=dict(autorange="reversed", tickfont=dict(size=10)),
+    )
+    return fig
+
+
 def _render_agent_report(report: dict[str, Any]) -> None:
     """Render a single agent report as a styled chat bubble."""
     agent = report.get("agent", "unknown")
@@ -4256,6 +4458,17 @@ def tab_war_room(
     if not tickers:
         st.warning("No tickers in decisions.")
         return
+
+    # Portfolio-wide overview: ticker × voice vote matrix.
+    fig_matrix = _chart_agent_vote_matrix(decisions, debate)
+    if fig_matrix is not None:
+        st.plotly_chart(fig_matrix, width="stretch")
+        st.caption(
+            "B = bullish/BUY · N = neutral/HOLD · S = bearish/SELL. "
+            "Tickers are sorted by PM action (BUY first). Tickers without "
+            "a debate snapshot show only the PM column."
+        )
+        st.divider()
 
     selected = st.selectbox("Select Ticker", tickers, key="war_room_ticker")
 
