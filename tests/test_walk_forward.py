@@ -418,6 +418,7 @@ class TestWalkForwardRun:
         )
         assert set(result.equity_curve.columns) == {
             "date", "portfolio_value", "benchmark_value",
+            "leverage", "realized_vol_63d",
         }
 
     def test_daily_returns_has_correct_columns(
@@ -1149,6 +1150,87 @@ class TestVolatilityTargeting:
         # Portfolio should stay at initial capital (zero returns)
         final = result.equity_curve["portfolio_value"][-1]
         assert final == pytest.approx(cfg.initial_capital, rel=0.01)
+
+    # --- Phase 18: persisted leverage and realized_vol_63d -----------------
+
+    def test_leverage_column_length_matches_equity(
+        self, ohlcv_3t: pl.DataFrame
+    ) -> None:
+        res = self._run_with_vol(ohlcv_3t, target_vol=0.10, vol_lookback=20)
+        eq = res.equity_curve
+        assert eq["leverage"].len() == eq.height
+        assert eq["realized_vol_63d"].len() == eq.height
+
+    def test_leverage_no_target_vol_is_constant_one(
+        self, ohlcv_3t: pl.DataFrame
+    ) -> None:
+        """When target_vol=None, the persisted leverage stays at 1.0."""
+        res = self._run_with_vol(ohlcv_3t, target_vol=None)
+        leverages = res.equity_curve["leverage"].to_list()
+        assert all(lv == pytest.approx(1.0) for lv in leverages)
+
+    def test_leverage_within_clamp_when_targeting(self) -> None:
+        ohlcv = _make_ohlcv(
+            ["AAPL", "MSFT", "GOOG", "SPY"], n_days=400, seed=42,
+        )
+        res = self._run_with_vol(
+            ohlcv, target_vol=0.10, min_leverage=0.5, max_leverage=1.0,
+            vol_lookback=20,
+        )
+        leverages = res.equity_curve["leverage"].to_list()
+        assert all(0.5 <= lv <= 1.0 + 1e-9 for lv in leverages)
+
+    def test_realized_vol_first_lookback_days_are_null(
+        self, ohlcv_3t: pl.DataFrame
+    ) -> None:
+        """The first ``vol_lookback - 1`` daily returns yield no realized vol.
+
+        With ``vol_lookback=20``, indices 0..18 must be null because the
+        rolling window has fewer than 20 returns; index 19 is the first
+        bar at which the window is full, so it is the first non-null.
+        """
+        res = self._run_with_vol(ohlcv_3t, target_vol=0.10, vol_lookback=20)
+        rv = res.equity_curve["realized_vol_63d"].to_list()
+        assert rv[0] is None
+        assert rv[18] is None
+        assert rv[19] is not None
+        assert rv[20] is not None
+
+    def test_realized_vol_matches_manual_rolling_std(
+        self, ohlcv_3t: pl.DataFrame
+    ) -> None:
+        """The persisted realized_vol equals std(last K rets) * sqrt(252)."""
+        res = self._run_with_vol(ohlcv_3t, target_vol=0.10, vol_lookback=20)
+        port_rets = res.daily_returns["portfolio_return"].to_list()
+        rv = res.equity_curve["realized_vol_63d"].to_list()
+
+        # Sample a handful of indices well past the warmup.
+        for idx in [25, 50, len(port_rets) - 1]:
+            window = port_rets[idx - 19: idx + 1]  # last 20 returns
+            mean_r = sum(window) / 20
+            var = sum((r - mean_r) ** 2 for r in window) / 19
+            expected = math.sqrt(var) * math.sqrt(252)
+            assert rv[idx] == pytest.approx(expected, rel=1e-9, abs=1e-12)
+
+    def test_leverage_step_function_across_rebalances(self) -> None:
+        """Between two rebalances, leverage must stay constant."""
+        ohlcv = _make_ohlcv(
+            ["AAPL", "MSFT", "GOOG", "SPY"], n_days=400, seed=42,
+        )
+        res = self._run_with_vol(
+            ohlcv, target_vol=0.10, vol_lookback=20,
+        )
+        eq = res.equity_curve
+        rebal_dates = {r.date for r in res.rebalance_history}
+        leverages = eq["leverage"].to_list()
+        dates = eq["date"].to_list()
+
+        # Walk through consecutive non-rebalance days; leverage must
+        # not change between them.
+        for i in range(1, len(dates)):
+            if dates[i] in rebal_dates:
+                continue
+            assert leverages[i] == pytest.approx(leverages[i - 1])
 
 
 # ---------------------------------------------------------------------------

@@ -2507,6 +2507,160 @@ def _chart_sharpe_violin(
     return fig
 
 
+def _chart_vol_targeting(
+    equity_df: Any,
+    target_vol: float = 0.10,
+    min_leverage: float = 0.5,
+    max_leverage: float = 1.0,
+) -> go.Figure | None:
+    """Two-panel chart: applied leverage on top, realized vs target vol below.
+
+    The leverage subplot shows the step function of the leverage actually
+    committed at each rebalance (clamped to ``[min_leverage,
+    max_leverage]``). The volatility subplot overlays the rolling 63-day
+    realized portfolio vol against the configured target. Saturation at
+    either clamp is reported in the title.
+
+    Args:
+        equity_df: Polars DataFrame with ``date``, ``leverage`` and
+            ``realized_vol_63d`` columns (added in Phase 18 of
+            ``walk_forward.py``).
+        target_vol: Annualised target volatility (default 10%).
+        min_leverage: Lower clamp on leverage (default 0.5).
+        max_leverage: Upper clamp on leverage (default 1.0).
+
+    Returns:
+        Plotly Figure, or ``None`` when the required columns are missing
+        (which happens for parquet files generated before Phase 18).
+    """
+    if equity_df is None:
+        return None
+    required = {"date", "leverage", "realized_vol_63d"}
+    if not required.issubset(set(equity_df.columns)):
+        return None
+    if equity_df.height == 0:
+        return None
+
+    from plotly.subplots import make_subplots
+
+    dates = equity_df["date"].to_list()
+    leverages = equity_df["leverage"].to_list()
+    realized_vol = equity_df["realized_vol_63d"].to_list()
+
+    n_total = len(leverages)
+    if n_total == 0:
+        return None
+
+    eps = 1e-6
+    valid_lev = [lv for lv in leverages if lv is not None]
+    n_at_max = sum(1 for lv in valid_lev if lv >= max_leverage - eps)
+    n_at_min = sum(1 for lv in valid_lev if lv <= min_leverage + eps)
+    n_valid = max(1, len(valid_lev))
+    pct_max = n_at_max / n_valid * 100
+    pct_min = n_at_min / n_valid * 100
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.10,
+        subplot_titles=(
+            (
+                f"Leverage   |   {pct_max:.0f}% of days at max "
+                f"({max_leverage:.2f})"
+                f" · {pct_min:.0f}% at min ({min_leverage:.2f})"
+            ),
+            f"Realized Volatility (63d) vs Target ({target_vol:.0%})",
+        ),
+        row_heights=[0.40, 0.60],
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=dates,
+            y=leverages,
+            mode="lines",
+            line=dict(color=_ACCENT_BLUE, width=2, shape="hv"),
+            name="Leverage",
+            hovertemplate=(
+                "%{x|%Y-%m-%d}<br>Leverage: %{y:.3f}<extra></extra>"
+            ),
+        ),
+        row=1, col=1,
+    )
+    fig.add_hline(
+        y=max_leverage,
+        line_dash="dash", line_color="#888888",
+        annotation_text=f"max = {max_leverage:.2f}",
+        annotation_position="top right",
+        annotation_font_color="#AAAAAA",
+        row=1, col=1,
+    )
+    fig.add_hline(
+        y=min_leverage,
+        line_dash="dash", line_color="#888888",
+        annotation_text=f"min = {min_leverage:.2f}",
+        annotation_position="bottom right",
+        annotation_font_color="#AAAAAA",
+        row=1, col=1,
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=dates,
+            y=realized_vol,
+            mode="lines",
+            line=dict(color=_ACCENT_BLUE, width=2),
+            name="Realized vol (63d)",
+            hovertemplate=(
+                "%{x|%Y-%m-%d}<br>Realized vol: %{y:.2%}<extra></extra>"
+            ),
+            connectgaps=False,
+        ),
+        row=2, col=1,
+    )
+    fig.add_hline(
+        y=target_vol,
+        line_dash="solid", line_color=_ACCENT_GOLD, line_width=2,
+        annotation_text=f"target = {target_vol:.0%}",
+        annotation_position="top right",
+        annotation_font_color=_ACCENT_GOLD,
+        row=2, col=1,
+    )
+
+    fig.update_yaxes(
+        title_text="Leverage",
+        range=[min_leverage - 0.05, max_leverage + 0.05],
+        gridcolor="#222",
+        row=1, col=1,
+    )
+    fig.update_yaxes(
+        title_text="Annualised Vol",
+        tickformat=".0%",
+        gridcolor="#222",
+        row=2, col=1,
+    )
+    fig.update_xaxes(
+        title_text="Date",
+        gridcolor="#222",
+        row=2, col=1,
+    )
+    fig.update_layout(
+        title=dict(
+            text="Risk Management — Vol Targeting Trajectory",
+            x=0.0, xanchor="left",
+            font=dict(size=15, color=_TEXT),
+        ),
+        font=dict(color=_TEXT),
+        paper_bgcolor=_DARK_BG,
+        plot_bgcolor=_DARK_BG,
+        height=520,
+        margin=dict(l=60, r=20, t=80, b=40),
+        showlegend=False,
+        hovermode="x unified",
+    )
+    return fig
+
+
 def _chart_turnover_and_costs(
     equity_df: Any, weights_df: Any
 ) -> go.Figure | None:
@@ -3110,6 +3264,29 @@ def tab_benchmark(
         )
     else:
         st.info("Weight history unavailable for concentration metrics.")
+
+    st.divider()
+
+    # Risk management — vol targeting trajectory (Phase 18)
+    st.subheader("Risk Management")
+    fig_vol = _chart_vol_targeting(equity_df)
+    if fig_vol is not None:
+        st.plotly_chart(fig_vol, width="stretch")
+        st.caption(
+            "Top: the leverage actually committed at each rebalance, "
+            "clamped to [min, max]. Steps reflect rebalance events; "
+            "between rebalances the value is held constant. "
+            "Bottom: trailing 63-day realized portfolio volatility "
+            "(annualised) against the configured target. The vol "
+            "targeting overlay raises leverage when realized vol falls "
+            "below the target, and trims it when realized vol exceeds it."
+        )
+    else:
+        st.info(
+            "Vol targeting trajectory unavailable — re-run "
+            "`make benchmark-fast` to populate the `leverage` and "
+            "`realized_vol_63d` columns added in Phase 18."
+        )
 
     st.divider()
 
@@ -4459,17 +4636,6 @@ def tab_war_room(
         st.warning("No tickers in decisions.")
         return
 
-    # Portfolio-wide overview: ticker × voice vote matrix.
-    fig_matrix = _chart_agent_vote_matrix(decisions, debate)
-    if fig_matrix is not None:
-        st.plotly_chart(fig_matrix, width="stretch")
-        st.caption(
-            "B = bullish/BUY · N = neutral/HOLD · S = bearish/SELL. "
-            "Tickers are sorted by PM action (BUY first). Tickers without "
-            "a debate snapshot show only the PM column."
-        )
-        st.divider()
-
     selected = st.selectbox("Select Ticker", tickers, key="war_room_ticker")
 
     # --- Mode selector ---
@@ -4562,6 +4728,18 @@ def tab_war_room(
         if d["ticker"] == selected:
             _render_final_decision_card(d)
             break
+
+    # Portfolio-wide overview at the bottom: ticker × voice vote matrix.
+    fig_matrix = _chart_agent_vote_matrix(decisions, debate)
+    if fig_matrix is not None:
+        st.divider()
+        st.subheader("Decision Matrix — All Tickers")
+        st.plotly_chart(fig_matrix, width="stretch")
+        st.caption(
+            "B = bullish/BUY · N = neutral/HOLD · S = bearish/SELL. "
+            "Tickers are sorted by PM action (BUY first). Tickers without "
+            "a debate snapshot show only the PM column."
+        )
 
 
 def _render_live_debate() -> None:

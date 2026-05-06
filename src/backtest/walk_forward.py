@@ -535,10 +535,18 @@ class WalkForwardBacktester:
         portfolio_value = cfg.initial_capital
         benchmark_value = cfg.initial_capital
 
+        # Vol-targeting state (Phase 18): the leverage actually committed
+        # at the most recent rebalance.  Updated only when a rebalance
+        # passes the ``min_rebalance_delta`` gate, so the daily series is
+        # a step function.  Killswitch overrides this to 0.0 at end-of-day.
+        current_leverage = 1.0
+
         rebalance_history: list[RebalanceRecord] = []
         equity_dates: list[date] = []
         equity_portfolio: list[float] = []
         equity_benchmark: list[float] = []
+        equity_leverage: list[float] = []
+        equity_realized_vol: list[float | None] = []
         returns_port: list[float] = []
         returns_bench: list[float] = []
 
@@ -761,6 +769,9 @@ class WalkForwardBacktester:
                             retrained=retrained,
                         )
                     )
+                    # Commit the leverage that was actually applied; the
+                    # daily series will hold this until the next rebalance.
+                    current_leverage = leverage
 
                     logger.debug(
                         "Rebalanced on {}: turnover={:.4f} cost=${:.2f}",
@@ -808,6 +819,8 @@ class WalkForwardBacktester:
                 equity_dates.append(current_date)
                 equity_portfolio.append(0.0)
                 equity_benchmark.append(benchmark_value)
+                equity_leverage.append(0.0)
+                equity_realized_vol.append(None)
                 returns_port.append(port_ret)
                 returns_bench.append(bench_ret)
                 break # Encerra o backtest imediatamente
@@ -884,11 +897,30 @@ class WalkForwardBacktester:
             returns_port.append(port_ret)
             returns_bench.append(bench_ret)
 
+            # Track end-of-day risk diagnostics (Phase 18).  Killswitch
+            # overrides the committed leverage to 0.0 since holdings are
+            # liquidated.  Realized vol is NaN until ``vol_lookback``
+            # daily returns have accumulated.
+            equity_leverage.append(0.0 if in_cash else current_leverage)
+            if len(returns_port) >= cfg.vol_lookback:
+                recent = returns_port[-cfg.vol_lookback:]
+                mean_r = sum(recent) / cfg.vol_lookback
+                var = sum((r - mean_r) ** 2 for r in recent) / (
+                    cfg.vol_lookback - 1
+                )
+                equity_realized_vol.append(
+                    math.sqrt(var) * math.sqrt(cfg.trading_days_per_year)
+                )
+            else:
+                equity_realized_vol.append(None)
+
         # ---- Build results
         equity_curve = pl.DataFrame({
             "date": equity_dates,
             "portfolio_value": equity_portfolio,
             "benchmark_value": equity_benchmark,
+            "leverage": equity_leverage,
+            "realized_vol_63d": equity_realized_vol,
         })
 
         daily_returns = pl.DataFrame({
