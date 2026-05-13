@@ -44,17 +44,13 @@ except Exception:
 _EXPECTED_SCHEMA_VERSION = "1.2"
 _MIN_DISPLAY_WEIGHT = 1e-8
 
-_DARK_BG = "#0B0D14"
-_CARD_BG = "#11131D"
-_ACCENT_BLUE = "#60A5FA"
-_ACCENT_GREEN = "#34D399"
-_ACCENT_RED = "#F87171"
-_ACCENT_GOLD = "#FBBF24"
-_ACCENT_VIOLET = "#A78BFA"
-_BORDER = "#1F2230"
-_MUTED = "#8B92A8"
-_SUBTLE = "#13151F"
-_TEXT = "#F1F5F9"
+_DARK_BG = "#0E1117"
+_CARD_BG = "#1E2130"
+_ACCENT_BLUE = "#4A90D9"
+_ACCENT_GREEN = "#43A047"
+_ACCENT_RED = "#E53935"
+_ACCENT_GOLD = "#FFB300"
+_TEXT = "#FAFAFA"
 
 AGENT_STYLES: dict[str, dict[str, str]] = {
     "technical": {
@@ -99,325 +95,6 @@ _PLOTLY_COLORS = [
 def _ticker_color(index: int) -> str:
     """Return a color for a ticker by index (cycles through palette)."""
     return _PLOTLY_COLORS[index % len(_PLOTLY_COLORS)]
-
-
-_THEME_CSS = f"""
-<style>
-.stApp {{ background: {_DARK_BG}; }}
-section.main > div.block-container,
-[data-testid="stMainBlockContainer"] {{
-    padding-top: 1.1rem;
-    padding-bottom: 3rem;
-    max-width: 1600px;
-}}
-
-#MainMenu, footer {{ visibility: hidden; }}
-header[data-testid="stHeader"] {{ background: transparent; }}
-
-section[data-testid="stSidebar"] {{
-    background: {_SUBTLE};
-    border-right: 1px solid {_BORDER};
-}}
-section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {{ padding-top: 0.4rem; }}
-
-section[data-testid="stSidebar"] .stRadio > div {{
-    gap: 0.2rem;
-    flex-direction: column;
-}}
-section[data-testid="stSidebar"] .stRadio label {{
-    padding: 0.6rem 0.9rem;
-    border-radius: 8px;
-    border-left: 2px solid transparent;
-    transition: background 120ms ease;
-    cursor: pointer;
-    width: 100%;
-}}
-section[data-testid="stSidebar"] .stRadio label:hover {{ background: {_CARD_BG}; }}
-section[data-testid="stSidebar"] .stRadio label > div:first-child {{ display: none; }}
-section[data-testid="stSidebar"] .stRadio label p {{
-    color: {_MUTED} !important;
-    font-size: 0.92rem !important;
-    margin: 0 !important;
-    font-weight: 500 !important;
-}}
-section[data-testid="stSidebar"] .stRadio label:has(input:checked) {{
-    background: linear-gradient(90deg, rgba(167,139,250,0.18) 0%, rgba(167,139,250,0.04) 100%);
-    border-left-color: {_ACCENT_VIOLET};
-}}
-section[data-testid="stSidebar"] .stRadio label:has(input:checked) p {{
-    color: #FFFFFF !important;
-    font-weight: 600 !important;
-}}
-
-.tx-nav-section {{
-    color: {_MUTED};
-    font-size: 0.66rem;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    padding: 0.6rem 0.6rem 0.3rem 0.6rem;
-}}
-
-.tx-header {{
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
-    padding: 6px 4px 14px 4px;
-    border-bottom: 1px solid {_BORDER};
-    margin-bottom: 18px;
-}}
-.tx-header-left {{ display: flex; flex-direction: column; gap: 4px; }}
-.tx-header-title {{
-    font-size: 1.4rem;
-    font-weight: 700;
-    color: #FFFFFF;
-    margin: 0;
-    letter-spacing: -0.01em;
-}}
-.tx-header-sub {{ font-size: 0.78rem; color: {_MUTED}; margin: 0; }}
-.tx-header-right {{ display: flex; gap: 8px; align-items: center; }}
-
-.tx-chip {{
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: rgba(167,139,250,0.10);
-    color: #C4B5FD;
-    border: 1px solid rgba(167,139,250,0.30);
-    border-radius: 999px;
-    padding: 4px 12px;
-    font-size: 0.72rem;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-}}
-.tx-chip.success {{
-    background: rgba(52,211,153,0.10);
-    color: #6EE7B7;
-    border-color: rgba(52,211,153,0.30);
-}}
-.tx-chip.muted {{
-    background: rgba(139,146,168,0.08);
-    color: {_MUTED};
-    border-color: rgba(139,146,168,0.25);
-}}
-
-.tx-card {{
-    background: {_CARD_BG};
-    border: 1px solid {_BORDER};
-    border-radius: 10px;
-    padding: 18px 20px 16px 20px;
-    margin-bottom: 14px;
-}}
-.tx-card-title {{
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.10em;
-    color: {_MUTED};
-    margin: 0 0 12px 0;
-    font-weight: 700;
-}}
-.tx-card-subtitle {{
-    font-size: 0.78rem;
-    color: {_MUTED};
-    margin: -8px 0 12px 0;
-}}
-
-.tx-kpi {{
-    background: {_CARD_BG};
-    border: 1px solid {_BORDER};
-    border-radius: 10px;
-    padding: 14px 16px 12px 16px;
-    height: 100%;
-}}
-.tx-kpi-label {{
-    font-size: 0.70rem;
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
-    color: {_MUTED};
-    margin: 0 0 6px 0;
-    font-weight: 700;
-}}
-.tx-kpi-value {{
-    font-size: 1.75rem;
-    font-weight: 700;
-    color: #FFFFFF;
-    line-height: 1.1;
-    margin: 0 0 4px 0;
-    font-variant-numeric: tabular-nums;
-}}
-.tx-kpi-delta {{
-    font-size: 0.74rem;
-    font-weight: 600;
-    margin: 0;
-    font-variant-numeric: tabular-nums;
-}}
-.tx-kpi-delta.pos {{ color: {_ACCENT_GREEN}; }}
-.tx-kpi-delta.neg {{ color: {_ACCENT_RED}; }}
-.tx-kpi-delta.neutral {{ color: {_MUTED}; }}
-.tx-kpi-spark {{ margin-top: 8px; height: 28px; line-height: 0; }}
-
-.tx-alert {{
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 9px 0;
-    border-bottom: 1px solid {_BORDER};
-}}
-.tx-alert:last-child {{ border-bottom: none; padding-bottom: 0; }}
-.tx-alert-dot {{
-    flex-shrink: 0;
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    margin-top: 6px;
-}}
-.tx-alert-dot.green  {{ background: {_ACCENT_GREEN}; box-shadow: 0 0 8px rgba(52,211,153,0.55); }}
-.tx-alert-dot.amber  {{ background: {_ACCENT_GOLD};  box-shadow: 0 0 8px rgba(251,191,36,0.55); }}
-.tx-alert-dot.red    {{ background: {_ACCENT_RED};   box-shadow: 0 0 8px rgba(248,113,113,0.55); }}
-.tx-alert-dot.violet {{ background: {_ACCENT_VIOLET};box-shadow: 0 0 8px rgba(167,139,250,0.55); }}
-.tx-alert-dot.blue   {{ background: {_ACCENT_BLUE};  box-shadow: 0 0 8px rgba(96,165,250,0.55); }}
-.tx-alert-body {{ flex: 1; min-width: 0; }}
-.tx-alert-title {{ color: #E5E7EB; font-size: 0.84rem; font-weight: 600; line-height: 1.25; }}
-.tx-alert-sub {{ color: {_MUTED}; font-size: 0.72rem; margin-top: 2px; }}
-.tx-alert-time {{ color: {_MUTED}; font-size: 0.70rem; flex-shrink: 0; padding-top: 2px; }}
-
-.tx-config-row {{
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 7px 0;
-    border-bottom: 1px solid {_BORDER};
-    gap: 12px;
-}}
-.tx-config-row:last-child {{ border-bottom: none; }}
-.tx-config-key {{ color: {_MUTED}; font-size: 0.78rem; flex-shrink: 0; }}
-.tx-config-val {{ color: {_TEXT}; font-size: 0.82rem; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }}
-
-h1, h2, h3 {{ color: {_TEXT} !important; }}
-h2 {{ font-size: 1.05rem !important; font-weight: 600 !important; letter-spacing: -0.005em; }}
-h3 {{ font-size: 0.92rem !important; font-weight: 600 !important; }}
-
-div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {{ padding-right: 8px; }}
-div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:last-child {{ padding-right: 0; }}
-
-/* Override Streamlit's bordered container to match the card palette */
-[data-testid="stVerticalBlockBorderWrapper"] {{
-    background: {_CARD_BG} !important;
-    border: 1px solid {_BORDER} !important;
-    border-radius: 10px !important;
-    padding: 14px 18px 8px 18px !important;
-    margin-bottom: 14px;
-}}
-[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"] {{
-    gap: 0.4rem;
-}}
-
-/* Plotly chart background blends into the card */
-[data-testid="stVerticalBlockBorderWrapper"] .js-plotly-plot,
-[data-testid="stVerticalBlockBorderWrapper"] .plot-container {{
-    background: transparent !important;
-}}
-</style>
-"""
-
-
-def _inject_theme() -> None:
-    """Inject the SaaS-style CSS theme into the Streamlit page."""
-    st.markdown(_THEME_CSS, unsafe_allow_html=True)
-
-
-def _sparkline_svg(
-    values: list[float] | None,
-    color: str = _ACCENT_VIOLET,
-    width: int = 160,
-    height: int = 28,
-    fill: bool = True,
-) -> str:
-    """Render a compact inline-SVG sparkline from a numeric series.
-
-    Args:
-        values: Series to plot (>=2 points). ``None`` or short series returns ''.
-        color: Stroke (and 15%-opacity fill) color.
-        width: SVG viewBox width.
-        height: SVG viewBox height.
-        fill: If True, draws a filled area under the line.
-
-    Returns:
-        Inline ``<svg>`` markup; empty string when the series cannot be drawn.
-    """
-    if not values or len(values) < 2:
-        return ""
-    lo, hi = min(values), max(values)
-    span = hi - lo if hi > lo else 1.0
-    n = len(values)
-    pad = 3
-    pts = []
-    for i, v in enumerate(values):
-        x = (i / (n - 1)) * width
-        y = height - pad - ((v - lo) / span) * (height - 2 * pad)
-        pts.append(f"{x:.1f},{y:.1f}")
-    line_pts = " ".join(pts)
-    fill_layer = ""
-    if fill:
-        fill_pts = f"0,{height} {line_pts} {width},{height}"
-        fill_layer = (
-            f'<polyline points="{fill_pts}" fill="{color}" fill-opacity="0.18" '
-            f'stroke="none"/>'
-        )
-    return (
-        f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" '
-        f'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">'
-        f'{fill_layer}'
-        f'<polyline points="{line_pts}" fill="none" stroke="{color}" '
-        f'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>'
-        f'</svg>'
-    )
-
-
-def _downsample(values: list[float], n: int = 60) -> list[float]:
-    """Subsample ``values`` down to (at most) ``n`` evenly spaced points."""
-    if not values:
-        return []
-    if len(values) <= n:
-        return values
-    step = len(values) / n
-    return [values[int(i * step)] for i in range(n)]
-
-
-def _kpi_card_html(
-    label: str,
-    value: str,
-    delta: str | None = None,
-    delta_kind: str = "neutral",
-    spark_svg: str = "",
-) -> str:
-    """Build a single KPI card as HTML for embedding in an ``st.markdown`` block.
-
-    Args:
-        label: Top-row caption (uppercase styling applied by CSS).
-        value: Hero numeric value (already formatted).
-        delta: Optional sub-line shown under the value.
-        delta_kind: ``"pos"``, ``"neg"``, or ``"neutral"`` — colours the delta.
-        spark_svg: Optional inline SVG sparkline to render at the bottom.
-
-    Returns:
-        HTML string for a single ``.tx-kpi`` card.
-    """
-    arrow = "▲" if delta_kind == "pos" else ("▼" if delta_kind == "neg" else "")
-    if delta:
-        delta_text = f"{arrow} {delta}".strip()
-        delta_html = f'<div class="tx-kpi-delta {delta_kind}">{delta_text}</div>'
-    else:
-        delta_html = ''
-    spark_html = f'<div class="tx-kpi-spark">{spark_svg}</div>' if spark_svg else ''
-    return (
-        f'<div class="tx-kpi">'
-        f'<div class="tx-kpi-label">{label}</div>'
-        f'<div class="tx-kpi-value">{value}</div>'
-        f'{delta_html}'
-        f'{spark_html}'
-        f'</div>'
-    )
-
 
 # ---------------------------------------------------------------------------
 # Data loaders (cached)
@@ -3285,23 +2962,14 @@ def tab_benchmark(
     ticker_returns_df: Any | None = None,
 ) -> None:
     """Render the Benchmark tab."""
+    st.header("Benchmark — Walk-Forward Backtest")
+
     if equity_df is None:
         st.warning(
             "No benchmark data found. Run `make benchmark-fast` to generate "
             "benchmark results."
         )
         return
-
-    # KPI strip — same component used in Overview
-    if metrics is not None:
-        _render_kpi_strip(metrics, equity_df)
-        st.markdown(
-            f'<div style="color: {_MUTED}; font-size: 0.78rem; '
-            f'margin: -6px 0 16px 4px;">Walk-forward backtest over '
-            f'{equity_df.height} trading days · benchmark = '
-            f'{_BENCHMARK_TICKER} buy-and-hold</div>',
-            unsafe_allow_html=True,
-        )
 
     # --- Strategy Configuration expander
     with st.expander("Strategy Configuration (CPCV-OOS validated)", expanded=False):
@@ -5640,420 +5308,32 @@ def tab_microstructure(
 
 
 # ---------------------------------------------------------------------------
-# Overview view + shared layout helpers
-# ---------------------------------------------------------------------------
-
-
-_NAV_VIEWS: list[tuple[str, str]] = [
-    ("Overview",       "🏠  Overview"),
-    ("Benchmark",      "📊  Benchmark"),
-    ("Performance",    "📈  Performance"),
-    ("War Room",       "⚔️  War Room"),
-    ("Microstructure", "🔬  Microstructure"),
-]
-
-
-def _format_relative_time(ts_iso: str | None) -> str:
-    """Format an ISO timestamp as a short relative time (e.g. ``3h ago``)."""
-    if not ts_iso:
-        return "—"
-    try:
-        dt = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return str(ts_iso)[:10]
-    delta = datetime.now(timezone.utc) - dt
-    secs = int(delta.total_seconds())
-    if secs < 60:
-        return "just now"
-    if secs < 3600:
-        return f"{secs // 60}m ago"
-    if secs < 86400:
-        return f"{secs // 3600}h ago"
-    days = secs // 86400
-    if days < 30:
-        return f"{days}d ago"
-    if days < 365:
-        return f"{days // 30}mo ago"
-    return f"{days // 365}y ago"
-
-
-def _render_kpi_strip(metrics: dict[str, float], equity_df: Any) -> None:
-    """Render the 5-card KPI strip with inline sparklines.
-
-    Cards: Sharpe Ratio, CAGR, Max Drawdown, Beta vs SPY, Alpha (ann.).
-    Sparkline data is downsampled from the equity / drawdown / spread series
-    so the strip renders cheaply even on the 2500+-day walk-forward equity.
-    """
-    sharpe = metrics.get("sharpe_ratio")
-    cagr = metrics.get("cagr")
-    maxdd = metrics.get("max_drawdown")
-    beta = metrics.get("beta")
-    alpha = metrics.get("alpha")
-    total_ret = metrics.get("total_return")
-    bench_ret = metrics.get("benchmark_total_return")
-    tracking_err = metrics.get("tracking_error")
-    dd_dur = metrics.get("max_drawdown_duration_days")
-
-    spark_equity: list[float] = []
-    spark_dd: list[float] = []
-    spark_spread: list[float] = []
-    if equity_df is not None and equity_df.height >= 30:
-        port = equity_df["portfolio_value"].to_list()
-        bench = equity_df["benchmark_value"].to_list()
-        spark_equity = _downsample(port, 80)
-        spark_dd = _downsample(_compute_drawdown(port), 80)
-        spread = [
-            (p / port[0]) - (b / bench[0])
-            for p, b in zip(port, bench, strict=False)
-            if port[0] and bench[0]
-        ]
-        spark_spread = _downsample(spread, 80)
-
-    # CAGR delta vs SPY (annualised from total returns)
-    cagr_delta_txt: str | None = None
-    cagr_delta_kind = "neutral"
-    if total_ret is not None and bench_ret is not None and equity_df is not None:
-        n_years = max(equity_df.height / 252.0, 1.0)
-        port_cagr = (1.0 + total_ret) ** (1.0 / n_years) - 1.0
-        bench_cagr = (1.0 + bench_ret) ** (1.0 / n_years) - 1.0
-        diff_pp = (port_cagr - bench_cagr) * 100
-        cagr_delta_txt = f"{abs(diff_pp):.1f}pp vs SPY"
-        cagr_delta_kind = "pos" if diff_pp >= 0 else "neg"
-
-    beta_badge = "Defensive" if (beta or 1.0) < 0.8 else (
-        "Aggressive" if (beta or 1.0) > 1.2 else "Market-like"
-    )
-    beta_kind = "pos" if (beta or 1.0) < 0.8 else ("neg" if (beta or 1.0) > 1.2 else "neutral")
-
-    alpha_kind = "pos" if (alpha or 0.0) > 0 else "neg"
-    tracking_txt = (
-        f"Tracking err {tracking_err * 100:.1f}%"
-        if tracking_err is not None else None
-    )
-
-    dd_txt = f"Duration {int(dd_dur)}d" if dd_dur else None
-
-    cards = [
-        {
-            "label": "Sharpe Ratio",
-            "value": f"{sharpe:.3f}" if sharpe is not None else "—",
-            "delta": "10y walk-forward OOS",
-            "delta_kind": "neutral",
-            "spark": _sparkline_svg(spark_equity, _ACCENT_VIOLET),
-        },
-        {
-            "label": "CAGR",
-            "value": f"{cagr * 100:.2f}%" if cagr is not None else "—",
-            "delta": cagr_delta_txt,
-            "delta_kind": cagr_delta_kind,
-            "spark": _sparkline_svg(spark_equity, _ACCENT_BLUE),
-        },
-        {
-            "label": "Max Drawdown",
-            "value": f"{maxdd * 100:.2f}%" if maxdd is not None else "—",
-            "delta": dd_txt,
-            "delta_kind": "neutral",
-            "spark": _sparkline_svg(spark_dd, _ACCENT_RED),
-        },
-        {
-            "label": f"Beta vs {_BENCHMARK_TICKER}",
-            "value": f"{beta:.3f}" if beta is not None else "—",
-            "delta": beta_badge,
-            "delta_kind": beta_kind,
-            "spark": _sparkline_svg(spark_spread, _ACCENT_GREEN, fill=False),
-        },
-        {
-            "label": "Alpha (ann.)",
-            "value": f"{alpha * 100:+.2f}%" if alpha is not None else "—",
-            "delta": tracking_txt,
-            "delta_kind": alpha_kind,
-            "spark": _sparkline_svg(spark_spread, _ACCENT_GOLD),
-        },
-    ]
-
-    cols = st.columns(5, gap="small")
-    for col, card in zip(cols, cards, strict=False):
-        with col:
-            st.markdown(
-                _kpi_card_html(
-                    card["label"], card["value"],
-                    card["delta"], card["delta_kind"], card["spark"],
-                ),
-                unsafe_allow_html=True,
-            )
-
-
-def _render_active_alerts(
-    decisions: dict[str, Any] | None,
-    metrics: dict[str, float] | None,
-    equity_df: Any,
-) -> None:
-    """Render the "Active Alerts" card derived from current system state.
-
-    Items reflect: decision freshness, killswitch (always OFF in champion config),
-    realised volatility regime vs 10% target, and current drawdown depth vs MaxDD.
-    """
-    alerts: list[tuple[str, str, str, str]] = []  # (color, title, sub, time)
-
-    if decisions and decisions.get("timestamp"):
-        ts = decisions["timestamp"]
-        time_str = _format_relative_time(ts)
-        n_dec = len(decisions.get("decisions", []))
-        try:
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            sub = dt.strftime("%Y-%m-%d %H:%M UTC")
-            days_old = (datetime.now(timezone.utc) - dt).days
-            color = "green" if days_old < 7 else ("amber" if days_old < 30 else "red")
-        except (ValueError, AttributeError):
-            sub = "timestamp unreadable"
-            color = "amber"
-        alerts.append((color, f"Decisions cached · {n_dec} tickers", sub, time_str))
-    else:
-        alerts.append(("amber", "No decisions yet", "Run `make decide`", "—"))
-
-    vol = metrics.get("annualized_volatility") if metrics else None
-    if vol is not None:
-        target = 0.10
-        deviation = abs(vol - target)
-        if deviation < 0.015:
-            alerts.append((
-                "green",
-                f"Vol on target · {vol * 100:.1f}%",
-                "ex-ante 10% with 63d lookback",
-                "live",
-            ))
-        elif vol < target:
-            alerts.append((
-                "blue",
-                f"Vol below target · {vol * 100:.1f}%",
-                f"target 10%, slack {(target - vol) * 100:.1f}pp",
-                "live",
-            ))
-        else:
-            alerts.append((
-                "amber",
-                f"Vol above target · {vol * 100:.1f}%",
-                f"target 10%, {(vol - target) * 100:.1f}pp over",
-                "live",
-            ))
-
-    maxdd = metrics.get("max_drawdown") if metrics else None
-    if equity_df is not None and equity_df.height >= 2 and maxdd is not None:
-        port = equity_df["portfolio_value"].to_list()
-        cur_dd = _compute_drawdown(port)[-1]
-        depth_pct = abs(cur_dd) * 100
-        max_pct = abs(maxdd) * 100
-        if depth_pct < 1.0:
-            alerts.append((
-                "green",
-                "At equity peak",
-                f"vs MaxDD {max_pct:.1f}% over backtest",
-                "live",
-            ))
-        else:
-            ratio = depth_pct / max_pct if max_pct > 0 else 0.0
-            color = "green" if ratio < 0.33 else ("amber" if ratio < 0.66 else "red")
-            alerts.append((
-                color,
-                f"In drawdown · {depth_pct:.1f}%",
-                f"{ratio * 100:.0f}% of MaxDD ({max_pct:.1f}%)",
-                "live",
-            ))
-
-    alerts.append((
-        "violet",
-        "Killswitch disabled",
-        "validated harmful in CPCV-OOS sweep (982 cfgs)",
-        "config",
-    ))
-
-    rows_html = []
-    for color, title, sub, time_str in alerts[:5]:
-        rows_html.append(
-            f'<div class="tx-alert">'
-            f'<div class="tx-alert-dot {color}"></div>'
-            f'<div class="tx-alert-body">'
-            f'<div class="tx-alert-title">{title}</div>'
-            f'<div class="tx-alert-sub">{sub}</div>'
-            f'</div>'
-            f'<div class="tx-alert-time">{time_str}</div>'
-            f'</div>'
-        )
-    st.markdown(
-        '<div class="tx-card">'
-        '<div class="tx-card-title">Active Signals</div>'
-        + "".join(rows_html)
-        + '</div>',
-        unsafe_allow_html=True,
-    )
-
-
-def _render_latest_runs() -> None:
-    """Render the "Latest Runs" card derived from file mtimes in data/outputs/."""
-    pipelines = [
-        ("decisions.json",         "LangGraph debate",  "violet"),
-        ("benchmark_metrics.json", "Walk-forward",      "blue"),
-        ("predictions.parquet",    "PatchTST forecast", "green"),
-        ("debate_history.json",    "Debate replay",     "amber"),
-    ]
-    rows_html = []
-    for filename, label, color in pipelines:
-        path = DATA_DIR / filename
-        if path.exists():
-            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-            sub = mtime.strftime("%Y-%m-%d %H:%M")
-            time_str = _format_relative_time(mtime.isoformat())
-        else:
-            sub = "not generated"
-            time_str = "—"
-            color = "red"
-        rows_html.append(
-            f'<div class="tx-alert">'
-            f'<div class="tx-alert-dot {color}"></div>'
-            f'<div class="tx-alert-body">'
-            f'<div class="tx-alert-title">{label}</div>'
-            f'<div class="tx-alert-sub">{sub}</div>'
-            f'</div>'
-            f'<div class="tx-alert-time">{time_str}</div>'
-            f'</div>'
-        )
-    st.markdown(
-        '<div class="tx-card">'
-        '<div class="tx-card-title">Latest Runs</div>'
-        + "".join(rows_html)
-        + '</div>',
-        unsafe_allow_html=True,
-    )
-
-
-def _render_champion_config() -> None:
-    """Render the validated CPCV-OOS champion configuration as a 2-column card."""
-    items = list(_VALIDATED_CONFIG.items())
-    mid = (len(items) + 1) // 2
-    left_html = "".join(
-        f'<div class="tx-config-row">'
-        f'<span class="tx-config-key">{k}</span>'
-        f'<span class="tx-config-val">{v}</span>'
-        f'</div>'
-        for k, v in items[:mid]
-    )
-    right_html = "".join(
-        f'<div class="tx-config-row">'
-        f'<span class="tx-config-key">{k}</span>'
-        f'<span class="tx-config-val">{v}</span>'
-        f'</div>'
-        for k, v in items[mid:]
-    )
-    st.markdown(
-        f'<div class="tx-card">'
-        f'<div class="tx-card-title">Champion Configuration · CPCV-OOS validated</div>'
-        f'<div class="tx-card-subtitle">3-tier grid search · 982 configs · '
-        f'15 combinatorial test paths each</div>'
-        f'<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px;">'
-        f'<div>{left_html}</div>'
-        f'<div>{right_html}</div>'
-        f'</div>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-
-def _shrink_plotly_for_card(fig: go.Figure, height: int = 220) -> go.Figure:
-    """Strip a Plotly chart's title, shrink margins, and blend its bg with the card."""
-    fig.update_layout(
-        title=None,
-        height=height,
-        showlegend=False,
-        margin=dict(t=8, b=28, l=40, r=10),
-        paper_bgcolor=_CARD_BG,
-        plot_bgcolor=_CARD_BG,
-    )
-    return fig
-
-
-def tab_overview(
-    decisions: dict[str, Any] | None,
-    equity_df: Any,
-    metrics: dict[str, float] | None,
-    weights_df: Any | None,
-    ticker_returns_df: Any | None = None,
-) -> None:
-    """Render the Overview view: KPI strip, equity, alerts, runs, config.
-
-    The Overview is the LinkedIn-ready landing surface — it concentrates the
-    most relevant headline numbers (KPI strip), the headline chart (equity vs
-    benchmark), and the rolling-status panels (signals + runs) in a single
-    scroll-free view on a 1080p+ monitor.
-    """
-    if equity_df is None or metrics is None:
-        st.warning(
-            "No benchmark data found. Run `make benchmark-fast` to generate "
-            "`data/outputs/benchmark_equity.parquet` and "
-            "`benchmark_metrics.json`."
-        )
-        return
-
-    _render_kpi_strip(metrics, equity_df)
-
-    col_eq, col_alerts = st.columns([2, 1], gap="small")
-    with col_eq:
-        with st.container(border=True):
-            st.markdown(
-                f'<div class="tx-card-title">Equity Curve · Portfolio vs '
-                f'{_BENCHMARK_TICKER}</div>',
-                unsafe_allow_html=True,
-            )
-            fig_eq = _chart_benchmark_equity(equity_df, log_scale=False)
-            _shrink_plotly_for_card(fig_eq, height=320)
-            fig_eq.update_layout(
-                showlegend=True,
-                legend=dict(
-                    orientation="h", yanchor="bottom",
-                    y=1.0, xanchor="right", x=1.0,
-                    font=dict(color=_TEXT, size=11),
-                ),
-            )
-            st.plotly_chart(
-                fig_eq, width="stretch", config={"displayModeBar": False},
-            )
-    with col_alerts:
-        _render_active_alerts(decisions, metrics, equity_df)
-
-    col_dd, col_rs, col_runs = st.columns(3, gap="small")
-    with col_dd:
-        with st.container(border=True):
-            st.markdown(
-                '<div class="tx-card-title">Drawdown</div>',
-                unsafe_allow_html=True,
-            )
-            fig_dd = _chart_benchmark_drawdown(equity_df)
-            _shrink_plotly_for_card(fig_dd, height=200)
-            st.plotly_chart(
-                fig_dd, width="stretch", config={"displayModeBar": False},
-            )
-    with col_rs:
-        with st.container(border=True):
-            st.markdown(
-                '<div class="tx-card-title">Rolling Sharpe · 252d</div>',
-                unsafe_allow_html=True,
-            )
-            fig_rs = _chart_rolling_sharpe(equity_df, window=252)
-            if fig_rs is not None:
-                _shrink_plotly_for_card(fig_rs, height=200)
-                st.plotly_chart(
-                    fig_rs, width="stretch", config={"displayModeBar": False},
-                )
-            else:
-                st.caption("Not enough data for 252-day rolling window.")
-    with col_runs:
-        _render_latest_runs()
-
-    _render_champion_config()
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+
+def _render_sidebar() -> None:
+    """Render sidebar with About, methodology link, and GitHub."""
+    with st.sidebar:
+        st.markdown("### About")
+        st.markdown(
+            "**Titanium Alpha** is a research project combining "
+            "deep learning forecasts (PatchTST), an agentic "
+            "debate layer (LangGraph), hierarchical risk parity "
+            "allocation (HRP), and CPCV-OOS validation."
+        )
+        st.divider()
+        st.markdown("### Links")
+        repo = "https://github.com/cockles98/titanium-alpha"
+        st.markdown(f"- [GitHub repository]({repo})")
+        st.markdown(f"- [Architecture]({repo}/blob/master/ARCHITECTURE.md)")
+        st.markdown(f"- [Backtest metrics reference]({repo}/blob/master/docs/backtest_metrics.md)")
+        st.divider()
+        st.caption(
+            "Walk-forward record (10y OOS): Sharpe=0.766, "
+            "CAGR=13.68%, MaxDD=-21.94%, Beta=0.566, "
+            "Alpha=+2.57% (rf=5%)."
+        )
 
 
 def _format_last_update(decisions: dict[str, Any] | None) -> str:
@@ -6068,114 +5348,16 @@ def _format_last_update(decisions: dict[str, Any] | None) -> str:
         return str(ts)[:19]
 
 
-def _render_sidebar() -> str:
-    """Render the sidebar nav rail + About section.
-
-    Returns:
-        The currently active view name (one of the entries in ``_NAV_VIEWS``).
-        Persisted across reruns in ``st.session_state.active_view``.
-    """
-    with st.sidebar:
-        st.markdown(
-            f'<div style="padding: 0.5rem 0.8rem 0.8rem 0.8rem;">'
-            f'<div style="font-size: 1.15rem; font-weight: 700; color: #FFFFFF;">'
-            f'🏦 Titanium Alpha</div>'
-            f'<div style="font-size: 0.74rem; color: {_MUTED};">'
-            f'Agentic Hedge Fund · v1.0</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            '<div class="tx-nav-section">Views</div>',
-            unsafe_allow_html=True,
-        )
-
-        labels = [label for _, label in _NAV_VIEWS]
-        names = [name for name, _ in _NAV_VIEWS]
-        if "active_view" not in st.session_state:
-            st.session_state.active_view = names[0]
-        default_idx = (
-            names.index(st.session_state.active_view)
-            if st.session_state.active_view in names
-            else 0
-        )
-        selected_label = st.radio(
-            "Active view",
-            labels,
-            index=default_idx,
-            label_visibility="collapsed",
-            key="nav_radio",
-        )
-        active_view = names[labels.index(selected_label)]
-        st.session_state.active_view = active_view
-
-        st.markdown(
-            '<div class="tx-nav-section" style="margin-top: 0.8rem;">About</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            "**Titanium Alpha** combines PatchTST forecasts, "
-            "a LangGraph multi-agent debate, financial RAG, "
-            "HRP allocation, and CPCV-OOS validation."
-        )
-        st.markdown(
-            '<div class="tx-nav-section" style="margin-top: 0.6rem;">Links</div>',
-            unsafe_allow_html=True,
-        )
-        repo = "https://github.com/cockles98/titanium-alpha"
-        st.markdown(f"- [GitHub]({repo})")
-        st.markdown(f"- [Architecture]({repo}/blob/master/ARCHITECTURE.md)")
-        st.markdown(f"- [Backtest metrics]({repo}/blob/master/docs/backtest_metrics.md)")
-        st.caption(
-            "10y OOS · Sharpe 0.766 · CAGR 13.68% · "
-            "MaxDD -21.94% · Beta 0.566 · α +2.57%"
-        )
-
-    return active_view
-
-
-def _render_header_bar(
-    decisions: dict[str, Any] | None,
-    active_view: str,
-) -> None:
-    """Render the page header bar with title, status chips, and last-update."""
-    last_update = _format_last_update(decisions)
-    rel_time = _format_relative_time(
-        decisions.get("timestamp") if decisions else None,
-    )
-    n_dec = len(decisions.get("decisions", [])) if decisions else 0
-    decisions_chip = (
-        f'<span class="tx-chip muted">{n_dec} decisions</span>'
-        if n_dec else ''
-    )
-    st.markdown(
-        f'<div class="tx-header">'
-        f'<div class="tx-header-left">'
-        f'<div class="tx-header-title">{active_view}</div>'
-        f'<div class="tx-header-sub">Last debate: '
-        f'<strong style="color: {_TEXT};">{last_update}</strong> · {rel_time}</div>'
-        f'</div>'
-        f'<div class="tx-header-right">'
-        f'{decisions_chip}'
-        f'<span class="tx-chip">Walk-Forward · 10y OOS</span>'
-        f'<span class="tx-chip success">● Production</span>'
-        f'</div>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-
 def main() -> None:
     """Streamlit entry point."""
     st.set_page_config(
         page_title="Titanium Alpha",
         page_icon="🏦",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="collapsed",
     )
-    _inject_theme()
 
-    # Load all data (cached via @st.cache_data)
+    # Load all data
     decisions = load_decisions()
     debate = load_debate_history()
     forecast = load_forecast()
@@ -6185,21 +5367,37 @@ def main() -> None:
     bench_weights = load_benchmark_weights()
     bench_ticker_returns = load_ticker_returns()
 
-    active_view = _render_sidebar()
-    _render_header_bar(decisions, active_view)
+    _render_sidebar()
 
-    if active_view == "Overview":
-        tab_overview(
-            decisions, bench_equity, bench_metrics, bench_weights,
-            bench_ticker_returns,
-        )
-    elif active_view == "Benchmark":
+    # Title + last update
+    last_update = _format_last_update(decisions)
+    st.markdown(
+        f"""<h1 style="text-align: center; color: #4A90D9;">
+        🏦 Titanium Alpha
+        </h1>
+        <p style="text-align: center; color: #888; margin-top: -10px;">
+        Agentic Multi-Strategy Hedge Fund Dashboard
+        </p>
+        <p style="text-align: center; color: #666; font-size: 0.85em; margin-top: -8px;">
+        Last update: <strong>{last_update}</strong>
+        </p>""",
+        unsafe_allow_html=True,
+    )
+
+    # Tabs
+    tab0, tab1, tab2, tab3 = st.tabs(
+        ["📊 Benchmark", "📈 Performance", "⚔️ War Room", "🔬 Microstructure"]
+    )
+
+    with tab0:
         tab_benchmark(
-            bench_equity, bench_metrics, bench_weights, bench_ticker_returns,
+            bench_equity, bench_metrics, bench_weights, bench_ticker_returns
         )
-    elif active_view == "Performance":
+
+    with tab1:
         tab_performance(decisions, bench_weights, bench_metrics)
-    elif active_view == "War Room":
+
+    with tab2:
         if decisions:
             tab_war_room(decisions, debate)
         else:
@@ -6208,7 +5406,8 @@ def main() -> None:
                 "project root to generate `data/outputs/decisions.json`, "
                 "then refresh this page."
             )
-    elif active_view == "Microstructure":
+
+    with tab3:
         tab_microstructure(
             forecast, predictions, bench_weights, bench_equity,
             bench_ticker_returns=bench_ticker_returns,
