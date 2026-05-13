@@ -4,6 +4,14 @@
 > **Objetivo primário:** gerar autoridade no nicho de quant + data science.
 > **Objetivo secundário:** promover o repositório GitHub `cockles98/titanium-alpha`.
 
+> ### 📌 v2 — 2026-05-13 — Plots reais adicionados
+>
+> A pasta `docs/images/benchmark graphs/` agora tem 16 plots do dashboard. Isso muda o carrossel: slides 6, 8 e 9 passam a **compositar PNGs reais** em vez de pedir ao Nano Banana que desenhe gráficos.
+> - **Para executar hoje:** vá direto à **[Seção 10](#10-atualização-2026-05-13--plots-reais-disponíveis-carrossel-v2)** — ela tem a estrutura final (10 slides), as specs dos slides novos, os prompts atualizados, a lista revisada de anexos e o plano de follow-up.
+> - **Seções 1, 2, 3, 5, 6, 7, 8** continuam válidas como fundamento.
+> - **Seções 4 e 9.3** foram **superadas** pela Seção 10 (mas mantidas como referência conceitual).
+> - **✓ Alpha reconciliado:** o valor canônico é **+2.57% a.a.** (Jensen's alpha de `benchmark_metrics.py`). O caption (Seção 3) já estava correto. Os plots `CAPM Scatter vs SPY.png` (+4.69%) e `Market Relationship.png` (+3.37%) estavam regredindo retornos brutos sem subtrair `rf` — bug do dashboard corrigido em `app.py`. **Regere esses dois plots antes de publicar** se for usá-los. Detalhes em §10.10.
+
 ---
 
 ## 1. Diagnóstico retórico
@@ -899,4 +907,320 @@ Evite comandos vagos ("mais bonito", "mais moderno") — o modelo interpreta com
 
 ---
 
-**Fim do guia.** O texto do caption na **Seção 3** é o que vai literalmente no LinkedIn. Os slides da **Seção 4** são a especificação de design. Os prompts da **Seção 9** são o que você cola no Nano Banana 2 para materializar. O resto é fundamento e operacionalização.
+**Fim do guia v1.** O texto do caption na **Seção 3** é o que vai literalmente no LinkedIn. Os slides da **Seção 4** são a especificação de design. Os prompts da **Seção 9** são o que você cola no Nano Banana 2 para materializar. O resto é fundamento e operacionalização.
+
+---
+
+## 10. Atualização 2026-05-13 — Plots reais disponíveis (carrossel v2)
+
+> Esta seção **substitui as Seções 4 e 9.3** para execução. As demais seções continuam como base conceitual. O caption (Seção 3) **não muda**, exceto possível revisão do número de Alpha — ver §10.10.
+
+### 10.1 — O que mudou no projeto
+
+A pasta `docs/images/benchmark graphs/` agora tem 16 plots reais do dashboard, todos renderizados na paleta dark do projeto (`#0E1117` fundo, série principal em azul, benchmark em laranja/amarelo). Isso elimina o risco de pedir ao Nano Banana 2 que **redesenhe** gráficos financeiros — ele falha consistentemente nessa tarefa. A partir de agora, **slides com gráfico usam o PNG verbatim**, e o modelo só renderiza o template (título, subtítulo, padding, número de página).
+
+**Inventário completo (16 plots):**
+
+| Plot | Função retórica | Usar onde |
+|---|---|---|
+| `Equity Curve.png` | Logos — proof of return | Slide 6 (carrossel) |
+| `Drawdown.png` | Logos — proof of risk control | Slide 6 (composite) |
+| `Sharpe Distribution Across CPCV Paths.png` | Ethos — rigor empírico | Slide 9 (substitui grid 2x2) |
+| `CPCV-OOS Path Distribution.png` | Ethos — fan chart de paths | Backup para slide 9 |
+| `Rolling Sharpe.png` | Logos — consistência 10y | Follow-up post 1 |
+| `Monthly Returns Heatmap.png` | Logos — granularidade mensal | Follow-up post 4 |
+| `CAPM Scatter vs SPY.png` | Authority — regressão clássica | Follow-up post 2 |
+| `Vol Targeting Trajectory.png` | Pathos — risk management visível | Follow-up post 3 |
+| `Top 10 Drawdowns.png` | Vulnerabilidade — perdi 10 vezes | Follow-up post 5 |
+| `UpDown Capture vs SPY.png` | Logos — assimetria | Follow-up post 6 |
+| `Return Distribution.png` | Logos — tail behavior | Follow-up post 7 (técnico) |
+| `Market Relationship.png` | Logos — β/α/ρ rolantes | Follow-up post 8 |
+| `Trading Cost.png` | Honestidade — custos reais | Follow-up post 9 |
+| `Portfolio Weight Evolution.png` | Showcase — HRP em ação | Follow-up post 10 |
+| `Portfolio Concentration Over Time.png` | Showcase — Effective N + Gini | Combina com Weight Evolution |
+| `Return Attribution.png` | Logos — diversificação real | Backup para follow-up |
+
+### 10.2 — Estrutura final do carrossel v2 (10 slides)
+
+| # | Slide | Mudança vs v1 |
+|---|---|---|
+| 1 | Hook | inalterado |
+| 2 | Situation | inalterado |
+| 3 | Complication | inalterado |
+| 4 | Confession | inalterado |
+| 5 | Architecture | inalterado |
+| **6** | **Equity Curve + Drawdown** (2-painel composite) | **NOVO** — inserido aqui |
+| 7 | Results table | era slide 6 |
+| 8 | War Room screenshot | era slide 7 |
+| **9** | **CPCV-OOS Sharpe Distribution** (violin) | **substitui** o grid 2x2 numérico antigo (slide 8 v1). Os números 1002/547/15/t-1 já aparecem no caption e em outros slides |
+| 10 | Limitations + CTA | era slide 9 |
+
+**Slide 11 opcional** (assinatura) = slide 10 opcional do v1 com numeração ajustada.
+
+**Por que substituir o grid 2x2 pelo violin:**
+- Grid 2x2 era prova *declarada* ("eu rodei 1002 testes — confie em mim").
+- Violin com 15 paths CPCV-OOS é prova *empírica* (mean=0.807, std=0.395, 100% paths positivos, PSR=0.99). Para quant sênior, distribution silencia o ceticismo de "e se você tivesse cortado em outra data?" — o gráfico responde.
+
+### 10.3 — Slide 6 (NOVO) · Equity Curve + Drawdown composite
+
+**Layout:** Canvas 1080×1350, fundo `#0E1117`, padding externo 48px.
+
+```
+┌──────────────────────────────────────────────┐
+│ Título  +  subtítulo                          │  ← 12% da altura
+├──────────────────────────────────────────────┤
+│                                              │
+│  [ Equity Curve.png — full width ]            │  ← painel 1, ~52% altura
+│                                              │
+├──────────── 24px gap ────────────────────────┤
+│  [ Drawdown.png — full width ]                │  ← painel 2, ~32% altura
+│                                              │
+├──────────────────────────────────────────────┤
+│                                    06 / 10   │  ← rodapé
+└──────────────────────────────────────────────┘
+```
+
+**Conteúdo:**
+- **Título** (Inter Bold, `#F5F6FA`, ~40pt, esquerda): `10 anos · Portfolio vs SPY`
+- **Subtítulo** (JetBrains Mono, `#8B94A7`, ~22pt): `2016-04-19 → 2026-04-17 · 2.514 dias OOS`
+- **Painel 1:** `Equity Curve.png` verbatim, borda 1px `#2F3640`, cantos 4px.
+- **Painel 2:** `Drawdown.png` verbatim, mesmo tratamento.
+- **Rodapé:** `06 / 10` direita, JetBrains Mono `#8B94A7` ~20pt.
+
+**Regra crítica:** Nano Banana 2 **NÃO desenha** os gráficos. Os PNGs são assets — o modelo só faz o frame.
+
+**Justificativa retórica:** este é o slide do "para o dedo". A equity curve estabelece "acompanha o mercado"; o drawdown estabelece "com metade da dor". É a defesa visual do Sharpe sem precisar gritar "Sharpe!".
+
+### 10.4 — Slide 9 (MUDOU) · CPCV-OOS Sharpe Distribution
+
+**Layout:** Canvas 1080×1350, fundo `#0E1117`, padding externo 48px.
+
+**Conteúdo:**
+- **Título** (Inter Bold, `#F5F6FA`, ~40pt, esquerda): `Por que eu confio neste Sharpe`
+- **Imagem central:** `Sharpe Distribution Across CPCV Paths.png` verbatim, ~75% da altura, borda 1px `#2F3640`, cantos 4px.
+- **Caption** (Inter Regular, `#F5F6FA` 85%, ~22pt, esquerda, largura máx 90%):
+  > "15 paths combinatoriais purgados. Média 0.81, std 0.40, **100% positivos**, PSR=0.99. O Sharpe walk-forward (0.77, linha amarela) cai **dentro** da distribuição empírica — não é cherry-picking de período."
+- **Rodapé:** `09 / 10`.
+
+**Justificativa retórica:** steel-manning visual. O ceticismo do quant sênior ("e se você tivesse cortado em outra data?") morre ao ver os 15 paths e o PSR=0.99 já anotados no PNG.
+
+### 10.5 — Slide 7 (renumerado) · Results table
+
+Conteúdo idêntico ao slide 6 do v1. **Único ajuste:** rodapé vira `07 / 10`. Aproveita-se a vizinhança visual com o slide 6 (gráficos) — a tabela funciona como *texto-prova-do-gráfico*.
+
+**Recomendação adicional para o slide 7:** acima da tabela, inserir uma microlegenda de uma linha em `#8B94A7` (~18pt JetBrains Mono): `(números do slide anterior, decompostos)`. Costura narrativa explícita.
+
+### 10.6 — Slide 8 (renumerado) · War Room
+
+Conteúdo idêntico ao slide 7 do v1 (composite com `docs/images/warroom.png`). **Único ajuste:** rodapé vira `08 / 10`.
+
+### 10.7 — Slide 10 (renumerado) · Limitations + CTA
+
+Conteúdo idêntico ao slide 9 do v1. **Único ajuste:** rodapé vira `09 / 10` → corrigido para `10 / 10` e o número final do contador.
+
+### 10.8 — Prompts Nano Banana 2 (v2)
+
+> Para os slides 1, 2, 3, 4, 5: prompts do v1 (Seção 9.3) continuam válidos. Trocar apenas `of 9` por `of 10` e os rodapés `0X / 09` por `0X / 10`.
+
+#### PROMPT SLIDE 6 (NOVO) — Equity Curve + Drawdown composite
+
+```
+Slide 6 of 10 — EQUITY CURVE + DRAWDOWN (composite).
+
+Two financial charts are attached as PNG files:
+  - "Equity Curve.png" — line chart, dark background
+  - "Drawdown.png" — area chart, dark background
+
+HARD RULE: do NOT redraw, re-render, restyle, or recolor the charts.
+Do NOT add overlays, glow, gradient, watermark, or annotations on top
+of them. Use the attached PNGs verbatim. Compose them inside the
+slide template — that is the entire job.
+
+Canvas: 1080x1350, background #0E1117, outer padding 48px.
+
+Top zone (~12% height): title and subtitle, left-aligned.
+  - Title (Inter Bold, #F5F6FA, equivalent 40pt):
+    "10 anos · Portfolio vs SPY"
+  - Subtitle one line below (JetBrains Mono, #8B94A7, equivalent 22pt):
+    "2016-04-19 → 2026-04-17 · 2,514 dias OOS"
+
+Middle zone: two stacked panels separated by a 24px gap.
+  - Panel 1 (upper, ~52% of canvas height): place Equity Curve.png at
+    full width of the inner content area, with a 1px #2F3640 border
+    and 4px rounded corners.
+  - Panel 2 (lower, ~32% of canvas height): place Drawdown.png with
+    identical border treatment.
+
+Bottom-right: page indicator (JetBrains Mono, #8B94A7, equivalent 20pt):
+"06 / 10"
+
+No icons, no decorative marks, no extra dividers. The two charts ARE
+the slide.
+```
+
+#### PROMPT SLIDE 7 (RESULTS) — ajuste de v1
+
+Use o prompt do Slide 6 da Seção 9.3 do v1 com **duas alterações**:
+- Substituir `Slide 6 of 9` → `Slide 7 of 10`
+- Substituir `"06 / 09"` → `"07 / 10"`
+- (Opcional) Acima do título, adicionar nano-rótulo (JetBrains Mono, `#8B94A7`, equivalente 18pt): `"números do slide anterior, decompostos"`
+
+#### PROMPT SLIDE 8 (WAR ROOM) — ajuste de v1
+
+Use o prompt do Slide 7 da Seção 9.3 do v1 com:
+- Substituir `Slide 7 of 9` → `Slide 8 of 10`
+- Substituir `"07 / 09"` → `"08 / 10"`
+
+#### PROMPT SLIDE 9 (NOVO) — CPCV-OOS Sharpe Distribution composite
+
+```
+Slide 9 of 10 — CPCV-OOS SHARPE DISTRIBUTION (composite).
+
+One chart is attached as a PNG file:
+  - "Sharpe Distribution Across CPCV Paths.png" — violin + boxplot +
+    scatter on dark background. The image already contains the
+    annotations "DSR expected max = 1.19" and "Walk-forward OOS = 0.77"
+    plus the stats box (Paths: 15, Mean: 0.807, Std: 0.395, % positive:
+    100%, PSR: 0.99). These annotations MUST remain readable.
+
+HARD RULE: do NOT redraw the violin, do NOT relabel axes, do NOT
+re-render annotations. Use the attached PNG verbatim.
+
+Canvas: 1080x1350, background #0E1117, outer padding 48px.
+
+Top zone (~10% height):
+  - Title (Inter Bold, #F5F6FA, equivalent 40pt, left-aligned):
+    "Por que eu confio neste Sharpe"
+
+Middle zone (~70% height): the attached PNG centered horizontally,
+occupying ~92% of inner width, with a 1px #2F3640 border and 4px
+rounded corners.
+
+Bottom zone (~12% height):
+  - Caption (Inter Regular, #F5F6FA at 85%, equivalent 22pt, left-aligned,
+    max width 92%, line-height 1.5x):
+    "15 paths combinatoriais purgados. Média 0.81, std 0.40, 100%
+     positivos, PSR=0.99. O Sharpe walk-forward (0.77, linha amarela)
+     cai dentro da distribuição empírica — não é cherry-picking
+     de período."
+
+Bottom-right corner: page indicator (JetBrains Mono, #8B94A7,
+equivalent 20pt): "09 / 10"
+
+No icons, no decorative gradients, no extra dividers beyond the page
+number and chart border.
+```
+
+#### PROMPT SLIDE 10 (LIMITATIONS + CTA) — ajuste de v1
+
+Use o prompt do Slide 9 da Seção 9.3 do v1 com:
+- Substituir `Slide 9 of 9` → `Slide 10 of 10`
+- Substituir `"09 / 09"` → `"10 / 10"`
+
+### 10.9 — Anexos no Nano Banana 2 (revisão da Seção 9.1)
+
+Ordem revisada de upload na conversa nova:
+
+| Ordem | Arquivo | Caminho | Função |
+|---|---|---|---|
+| 1 | `warroom.png` | `docs/images/warroom.png` | DNA visual primário (template) |
+| 2 | `Equity Curve.png` | `docs/images/benchmark graphs/Equity Curve.png` | Asset slide 6 |
+| 3 | `Drawdown.png` | `docs/images/benchmark graphs/Drawdown.png` | Asset slide 6 |
+| 4 | `Sharpe Distribution Across CPCV Paths.png` | `docs/images/benchmark graphs/Sharpe Distribution Across CPCV Paths.png` | Asset slide 9 |
+| 5 | `benchmark.png` | `docs/images/benchmark.png` | Referência adicional de paleta |
+| 6 *(opcional)* | `linkedin_publicacao_titanium_alpha.md` | raiz | Brief completo |
+
+Os outros 12 plots **não precisam** ser anexados nesta conversa — vão para conversas separadas dos posts de follow-up (§10.11).
+
+### 10.10 — ✓ Reconciliação do Alpha (resolvido 2026-05-13)
+
+**Valor canônico: Alpha = +2.57% a.a. (Jensen's alpha).** O caption (Seção 3) e o `CLAUDE.md` já estavam corretos.
+
+#### O que estava acontecendo
+
+A `benchmark_metrics.json` (output autoritativo de `make benchmark`) registra `alpha = 0.0257`, `beta = 0.5656`. A função `_capm_regression` em `src/backtest/benchmark_metrics.py:134-165` faz a regressão acadêmica padrão de **retornos em excesso**:
+
+```
+(R_p − rf) = α_J + β · (R_m − rf) + ε
+```
+
+→ produz Jensen's alpha (α_J), a definição CAPM padrão.
+
+Os plots do dashboard, no entanto, regrediam **retornos brutos** (sem subtrair `rf`):
+
+| Plot | Função em `app.py` | Valor inflado |
+|---|---|---|
+| `CAPM Scatter vs SPY.png` | `_chart_capm_scatter` (linhas ~1358-1455) | +4.69% (raw α') |
+| `Market Relationship.png` | `_rolling_regression` (linhas ~1038-1091) | +3.37% (rolling raw α' mean) |
+
+A relação algébrica:
+
+```
+α_J = α'_raw − (1 − β) · rf
+```
+
+Verificação numérica:
+- α'_raw = +4.69%/ano → α'_daily ≈ 0.000186
+- rf_daily = (1.05)^(1/252) − 1 ≈ 0.000194
+- (1 − β) · rf_daily = 0.4344 · 0.000194 ≈ 0.0000843
+- α_J_daily = 0.000186 − 0.0000843 ≈ 0.000102
+- α_J anual = 0.000102 × 252 = **+2.57%** ✓ bate com `benchmark_metrics.json`
+
+#### Fix aplicado em código
+
+- `src/dashboard/app.py:_chart_capm_scatter` — subtrai `(1 − β) · rf_daily` do intercepto antes de exibir.
+- `src/dashboard/app.py:_rolling_regression` — mesma correção dentro de cada janela rolante.
+- `tests/test_dashboard_phase_6_capm.py:test_capm_recovers_known_beta_and_alpha` — reconstrói o setup pra que Jensen's α seja zero/conhecido por construção.
+- `tests/test_dashboard_phase_4_market_rel.py:test_rolling_regression_*` — mesmo ajuste.
+- 22/22 testes do dashboard CAPM passam.
+
+#### Ação pendente (você)
+
+**Se for usar `CAPM Scatter vs SPY.png` ou `Market Relationship.png` na publicação, regere os PNGs** — os arquivos atuais ainda mostram os números inflados (+4.69%, +3.37% mean) porque foram exportados antes do fix. Caminho: rodar o dashboard localmente (`make dashboard` ou equivalente) e re-exportar via botão de download do Plotly, ou rodar `make benchmark` se ele exportar via script.
+
+Os plots **NÃO precisam ser regerados se você seguir a recomendação de 4 imagens** (Equity Curve, Drawdown, Sharpe Distribution, War Room) — o CAPM Scatter fica de fora.
+
+**Se for à variante de 5 imagens** (com CAPM Scatter), regere o PNG antes — caso contrário a publicação vai mostrar caption com +2.57% e imagem com +4.69%.
+
+### 10.11 — Calendário de follow-up posts (uso dos 12 plots restantes)
+
+> Cada post de follow-up referencia o carrossel original ("se você perdeu, link no comentário fixado"). Não publique todos — escolha 3-5 com base em qual post anterior engajou mais.
+
+| T | Tema | Plot principal | Ângulo retórico |
+|---|---|---|---|
+| **T+2 d** | "Rolling Sharpe — 10 anos sem cherry-picking" | `Rolling Sharpe.png` | Logos: Sharpe móvel 252d ao longo de 10 anos, mostra consistência |
+| **T+5 d** | "Vol targeting em ação — março de 2020" | `Vol Targeting Trajectory.png` | Pathos + Logos: leverage caiu para 0.5 enquanto realized vol explodia para 35% |
+| **T+8 d** | "CAPM clássico — α=+4.69%, β=0.566, R²=0.822, n=2.513" | `CAPM Scatter vs SPY.png` | Authority (regressão) + Logos (n grande) |
+| **T+12 d** | "Heatmap mensal — onde o portfolio perdeu" | `Monthly Returns Heatmap.png` | Vulnerabilidade: 2022 = −4.9%; mostra meses ruins (sem esconder) |
+| **T+15 d** | "Top 10 drawdowns — sim, perdi dinheiro 10 vezes em 10 anos" | `Top 10 Drawdowns.png` | Confissão + steel-manning: pior DD = −21.94% (COVID), 164 dias |
+| **T+18 d** | "Up/Down Capture — 76% up, 63% down, ratio 1.21" | `UpDown Capture vs SPY.png` | Logos: assimetria positiva é o coração do Sharpe excedente |
+| **T+22 d** | "HRP em movimento — Effective N oscilando entre 4 e 43" | `Portfolio Concentration Over Time.png` + `Portfolio Weight Evolution.png` | Showcase de produto: HRP não é estático |
+| **T+25 d** | "Quanto eu paguei em custos — $67.772 em 10 anos, 38 bps drag" | `Trading Cost.png` | Honestidade rara: custos reais vs backtests "sem fricção" |
+| **T+28 d** | "Distribuição de retornos diários — skew −0.58, kurt +10.66" | `Return Distribution.png` | Tribo técnica: tail behavior + VaR/CVaR explícitos |
+| **T+32 d** | "Atribuição — 47% do retorno vem de 15 tickers, 53% de outros 37" | `Return Attribution.png` | Diversificação real, não concentração disfarçada |
+
+**Mínimo viável:** 3 posts (T+2, T+5, T+15). Maximize engajamento por gancho — não por volume.
+
+### 10.12 — Workflow operacional (atualização do passo a passo)
+
+Mesmo passo a passo da Seção 9.4, com ajustes:
+
+1. Abra **nova conversa** no Nano Banana 2 dedicada a este carrossel.
+2. Anexe na ordem da §10.9 (warroom.png primeiro).
+3. Cole o **brief mestre da §9.2** (continua válido — paleta, tipografia, regras gerais).
+4. Aguarde confirmação.
+5. Gere slides 1-5 com os prompts originais da §9.3 (ajustando `09` → `10` no contador).
+6. Gere slide 6 com o prompt da §10.8 (composite Equity+DD).
+7. Gere slide 7 com o prompt original do v1 slide 6 (Results table). Lembre que a tabela é o ponto crítico — gere o fundo do slide e **monte a tabela em Figma/Canva por cima** com JetBrains Mono (mantém alinhamento monoespaçado).
+8. Gere slide 8 com o prompt original do v1 slide 7 (War Room composite).
+9. Gere slide 9 com o prompt da §10.8 (CPCV violin composite).
+10. Gere slide 10 com o prompt original do v1 slide 9 (Limitations + CTA). QR code **continua** sendo gerado separadamente (`qrcode.show("https://github.com/cockles98/titanium-alpha")`) e composto em Figma.
+11. Exporte 10 slides em PNG 1080×1350 @2x.
+12. Monte PDF na ordem 1→10.
+13. **Reconcile o número de Alpha (§10.10) antes de subir.**
+14. Valide em mobile real.
+15. Publique seguindo a Seção 6 (terça-quinta, 08h15-09h30 BRT).
+
+---
+
+**Fim do addendum v2.** O carrossel atual tem 10 slides, 3 deles ancorados em PNGs reais do dashboard (slides 6, 8, 9). O caption (Seção 3) e o resto do plano permanecem como estavam — exceto pela reconciliação do Alpha pendente.

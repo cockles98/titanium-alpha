@@ -68,17 +68,22 @@ def test_capm_recovers_known_beta_and_alpha():
     rng = np.random.default_rng(42)
     spy = rng.normal(0.0, 0.01, size=800)
     beta_true = 0.6
-    alpha_daily = 0.0003
+    # The annotation reports Jensen's alpha (rf=5%). Build port so that
+    # Jensen's α = 0.0003 by construction: raw intercept must equal
+    # α_J + (1 - β) * rf_daily.
+    alpha_daily_jensen = 0.0003
+    rf_daily = (1.0 + 0.05) ** (1.0 / 252) - 1.0
+    raw_intercept = alpha_daily_jensen + (1.0 - beta_true) * rf_daily
     # No noise: perfect line, R² ≈ 1.
-    port = alpha_daily + beta_true * spy
+    port = raw_intercept + beta_true * spy
     df = _equity_from_two_streams(port, spy)
     fig = _chart_capm_scatter(df)
     assert fig is not None
     text = _annotation_text(fig)
     # Beta is shown to 3 decimals in the annotation.
     assert f"{beta_true:.3f}" in text
-    # Annualized alpha appears as a signed percentage.
-    expected_alpha_annual_pct = alpha_daily * 252.0 * 100.0  # in %
+    # Annualized Jensen's alpha appears as a signed percentage.
+    expected_alpha_annual_pct = alpha_daily_jensen * 252.0 * 100.0  # in %
     # Look for the numeric value ±0.01pp.
     found = False
     for offset in (0, -0.01, 0.01):

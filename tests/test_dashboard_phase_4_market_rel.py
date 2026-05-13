@@ -41,10 +41,13 @@ def _equity_from_two_streams(
 def test_rolling_regression_recovers_known_beta_and_zero_alpha():
     rng = np.random.default_rng(42)
     spy = rng.normal(0.0, 0.01, size=1000)
-    # port = 1.5 * spy (no noise, no alpha).
-    port = 1.5 * spy
+    # Jensen's alpha is 0 when (port - rf) = β · (spy - rf), i.e.
+    # port = β · spy + (1 - β) · rf_daily.
+    beta_true = 1.5
+    rf_daily = (1.0 + 0.05) ** (1.0 / 252) - 1.0
+    port = beta_true * spy + (1.0 - beta_true) * rf_daily
     b, a, c = _rolling_regression(port, spy, window=126)
-    np.testing.assert_allclose(np.nanmean(b), 1.5, rtol=1e-9)
+    np.testing.assert_allclose(np.nanmean(b), beta_true, rtol=1e-9)
     np.testing.assert_allclose(np.nanmean(a), 0.0, atol=1e-9)
     np.testing.assert_allclose(np.nanmean(c), 1.0, atol=1e-9)
 
@@ -62,10 +65,15 @@ def test_rolling_regression_correlation_zero_for_independent_streams():
 def test_rolling_regression_alpha_is_annualized():
     rng = np.random.default_rng(5)
     spy = rng.normal(0.0, 0.01, size=500)
-    daily_alpha = 0.0005  # daily
-    port = 0.8 * spy + daily_alpha  # constant alpha
+    # Build port so Jensen's α = 0.0005 (daily) by construction.
+    # raw_intercept = α_J + (1 - β) · rf_daily.
+    daily_alpha_jensen = 0.0005
+    beta_true = 0.8
+    rf_daily = (1.0 + 0.05) ** (1.0 / 252) - 1.0
+    raw_intercept = daily_alpha_jensen + (1.0 - beta_true) * rf_daily
+    port = beta_true * spy + raw_intercept
     _b, a, _c = _rolling_regression(port, spy, window=126)
-    expected_annual = daily_alpha * 252.0
+    expected_annual = daily_alpha_jensen * 252.0
     np.testing.assert_allclose(np.nanmean(a), expected_annual, rtol=1e-6)
 
 

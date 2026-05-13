@@ -1045,7 +1045,8 @@ def _rolling_regression(
     For every trailing window of size ``window`` ending at index ``t``:
 
     * ``beta = Cov(port, spy) / Var(spy)``
-    * ``alpha_daily = mean(port) - beta * mean(spy)``
+    * ``alpha_daily = (mean(port) − β · mean(spy)) − (1 − β) · rf_daily``
+      (Jensen's alpha; equivalent to regressing excess returns)
     * ``alpha_annual = alpha_daily * 252``
     * ``correlation = Corr(port, spy)``
 
@@ -1070,6 +1071,8 @@ def _rolling_regression(
     if window < 2 or n < window:
         return beta, alpha_ann, corr
 
+    rf_daily = (1.0 + 0.05) ** (1.0 / 252) - 1.0
+
     for t in range(window - 1, n):
         wp = p[t - window + 1: t + 1]
         ws = s[t - window + 1: t + 1]
@@ -1083,7 +1086,7 @@ def _rolling_regression(
             continue
         b = cov_ps / var_s
         beta[t] = b
-        alpha_ann[t] = (mp - b * ms) * 252.0
+        alpha_ann[t] = ((mp - b * ms) - rf_daily * (1.0 - b)) * 252.0
         std_p = float(np.sqrt((dp * dp).sum() / (window - 1)))
         std_s = float(np.sqrt(var_s))
         if std_p > 0 and std_s > 0:
@@ -1359,10 +1362,12 @@ def _chart_capm_scatter(equity_df: Any) -> go.Figure | None:
     """CAPM scatter of daily portfolio vs benchmark returns with OLS line.
 
     Each point is a trading day: x = benchmark daily return, y = portfolio
-    daily return. A single full-sample OLS line visualizes
-    ``R_p = α + β · R_m``. Slope is the static beta; intercept is the daily
-    alpha, annualized as ``α_daily × 252`` for the legend and annotation.
-    R² is computed from the correlation between the two return series.
+    daily return. A single full-sample OLS line visualizes the raw relation
+    ``R_p = α' + β · R_m``. Slope is the static beta. The annotation reports
+    Jensen's alpha (the CAPM definition), obtained from the excess-return
+    regression ``(R_p − rf) = α_J + β · (R_m − rf)``. Algebraically
+    ``α_J = α' − (1 − β) · rf``, which is what ``benchmark_metrics.py``
+    produces and what the caption/report use.
 
     Args:
         equity_df: Polars DataFrame with ``date``, ``portfolio_value``,
@@ -1391,7 +1396,8 @@ def _chart_capm_scatter(equity_df: Any) -> go.Figure | None:
 
     slope, intercept = np.polyfit(spy_ret, port_ret, 1)
     beta = float(slope)
-    alpha_daily = float(intercept)
+    rf_daily = (1.0 + 0.05) ** (1.0 / 252) - 1.0
+    alpha_daily = float(intercept) - rf_daily * (1.0 - beta)
     alpha_annual = alpha_daily * 252.0
     r_squared = float(np.corrcoef(spy_ret, port_ret)[0, 1] ** 2)
 
