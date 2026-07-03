@@ -93,7 +93,10 @@ ignore = [
 "tests/**" = ["F841"]  # unused variables in tests are often intentional (fixtures / patch capture)
 
 [tool.mypy]
-python_version = "3.10"
+# Target 3.12 — the version CI and dev both run. Newer third-party stubs
+# (e.g. numpy) ship PEP 695 `type` statements that mypy only accepts at a
+# >=3.12 target; poetry.lock is not committed, so CI always resolves those.
+python_version = "3.12"
 ignore_missing_imports = true
 warn_unused_configs = true
 warn_redundant_casts = true
