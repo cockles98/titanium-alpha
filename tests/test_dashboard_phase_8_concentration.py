@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import math
 from datetime import date
 
-import numpy as np
 import plotly.graph_objects as go
 import polars as pl
 import pytest
@@ -15,7 +13,6 @@ from src.dashboard.app import (
     _compute_effective_n,
     _compute_gini,
 )
-
 
 # ---------------------------------------------------------------------------
 # _compute_effective_n

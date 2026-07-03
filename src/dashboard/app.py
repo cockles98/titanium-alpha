@@ -505,7 +505,6 @@ def _chart_calendar_heatmap(equity_df: Any) -> go.Figure | None:
     Returns:
         Plotly Figure, or ``None`` if fewer than 2 months of data are available.
     """
-    import polars as pl
 
     monthly = _compute_monthly_returns(equity_df)
     if monthly.height < 2:

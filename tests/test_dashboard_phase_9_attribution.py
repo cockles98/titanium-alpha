@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 
-import numpy as np
 import plotly.graph_objects as go
 import polars as pl
 import pytest
@@ -13,7 +12,6 @@ from src.dashboard.app import (
     _chart_contribution_waterfall,
     _compute_contribution_per_ticker,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

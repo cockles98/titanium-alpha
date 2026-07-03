@@ -741,7 +741,7 @@ class TestLoadValidationResults:
                 "baseline": {"mean_sharpe": 0.5, "accepted": True},
             },
         }
-        path = tmp_path / "validation_results.json"
+        path = tmp_path / "validation_tier1_results.json"
         with open(path, "w") as f:
             json.dump(data, f)
         with patch("src.dashboard.app.DATA_DIR", tmp_path):
@@ -751,7 +751,7 @@ class TestLoadValidationResults:
         assert "baseline" in result["configs"]
 
     def test_returns_none_on_corrupt_json(self, tmp_path: Path) -> None:
-        path = tmp_path / "validation_results.json"
+        path = tmp_path / "validation_tier1_results.json"
         path.write_text("not valid json{{{")
         with patch("src.dashboard.app.DATA_DIR", tmp_path):
             result = _load_validation_results()

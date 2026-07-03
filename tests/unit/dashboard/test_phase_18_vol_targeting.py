@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 
-import math
 import plotly.graph_objects as go
 import polars as pl
 import pytest

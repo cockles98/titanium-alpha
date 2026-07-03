@@ -286,11 +286,12 @@ class ValidationResult:
         p_value: Same as ``deflated_sharpe`` (alias for clarity).
         accepted: Whether the configuration passes acceptance criteria.
         metadata: Additional information (n_paths, path details, etc.).
-        per_path_equity: Optional test-period equity curves, one Polars
-            DataFrame per CPCV path (columns ``date``, ``equity``). Populated
-            by :meth:`CPCVParameterValidator.validate` when
-            ``collect_equity=True``. ``None`` otherwise, for backward
-            compatibility with callers that only inspect Sharpe aggregates.
+        per_path_equity: Optional test-period equity curves, one entry per
+            CPCV path (columns ``date``, ``equity``); an entry may be ``None``
+            when that path produced no usable equity. Populated by
+            :meth:`CPCVParameterValidator.validate` when ``collect_equity=True``.
+            ``None`` otherwise, for backward compatibility with callers that
+            only inspect Sharpe aggregates.
     """
 
     config: WalkForwardConfig
@@ -302,7 +303,7 @@ class ValidationResult:
     p_value: float
     accepted: bool
     metadata: dict[str, Any] = field(default_factory=dict)
-    per_path_equity: list[pl.DataFrame] | None = None
+    per_path_equity: list[pl.DataFrame | None] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a plain dictionary for JSON output.
@@ -653,6 +654,7 @@ class CPCVParameterValidator:
 
         # Build the test-period equity curve normalised to 1.0 at the first
         # test date, so downstream spaghetti plots can overlay paths fairly.
+        equity_frame: pl.DataFrame | None
         try:
             equity_frame = (
                 result.equity_curve

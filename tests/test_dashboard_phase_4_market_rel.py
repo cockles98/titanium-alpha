@@ -7,7 +7,6 @@ from datetime import date, timedelta
 import numpy as np
 import plotly.graph_objects as go
 import polars as pl
-import pytest
 
 from src.dashboard.app import (
     _chart_rolling_market_relationship,
