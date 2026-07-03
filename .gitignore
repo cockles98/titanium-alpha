@@ -64,3 +64,7 @@ lightning_logs/
 
 # Local agent config (Claude Code custom rules/workflows)
 .agents/
+
+# Local planning / drafts (not published)
+linkedin_publicacao_titanium_alpha.md
+plano_dashboard_upgrade.md
