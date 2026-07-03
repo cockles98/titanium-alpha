@@ -295,15 +295,16 @@ class NewsIngester:
         for query in _NEWSAPI_QUERIES:
             for attempt in range(1, self.max_retries + 1):
                 try:
+                    newsapi_params: dict[str, str | int] = {
+                        "q": query,
+                        "language": "en",
+                        "sortBy": "publishedAt",
+                        "pageSize": 20,
+                        "apiKey": self._newsapi_key,
+                    }
                     resp = requests.get(
                         "https://newsapi.org/v2/everything",
-                        params={
-                            "q": query,
-                            "language": "en",
-                            "sortBy": "publishedAt",
-                            "pageSize": 20,
-                            "apiKey": self._newsapi_key,
-                        },
+                        params=newsapi_params,
                         timeout=15,
                     )
                     resp.raise_for_status()
@@ -461,17 +462,18 @@ class NewsIngester:
 
         for attempt in range(1, self.max_retries + 1):
             try:
+                gdelt_params: dict[str, str | int] = {
+                    "query": query,
+                    "mode": "artlist",
+                    "maxrecords": max_records,
+                    "format": "json",
+                    "startdatetime": start_date.strftime("%Y%m%d%H%M%S"),
+                    "enddatetime": end_date.strftime("%Y%m%d%H%M%S"),
+                    "sourcelang": "english",
+                }
                 resp = requests.get(
                     _GDELT_BASE_URL,
-                    params={
-                        "query": query,
-                        "mode": "artlist",
-                        "maxrecords": max_records,
-                        "format": "json",
-                        "startdatetime": start_date.strftime("%Y%m%d%H%M%S"),
-                        "enddatetime": end_date.strftime("%Y%m%d%H%M%S"),
-                        "sourcelang": "english",
-                    },
+                    params=gdelt_params,
                     headers={"User-Agent": "TitaniumAlpha/1.0"},
                     timeout=30,
                 )
